@@ -301,11 +301,17 @@ def prune_sparsegpt(args, model, tokenizer, dev, prune_n=0, prune_m=0):
     torch.cuda.empty_cache()
 
 
+def validate_elastic_sparsegpt_stages(sparsities):
+    stages = list(sparsities)
+    if not stages or any(not 0.1 <= sparsity <= 0.8 for sparsity in stages):
+        raise ValueError("elastic_sparsegpt sparsities must be in [0.1, 0.8]")
+    if any(current <= previous for previous, current in zip(stages, stages[1:])):
+        raise ValueError("elastic_sparsegpt stages must be strictly increasing")
+    return stages
+
+
 def validate_elastic_sparsegpt_args(args, prune_n=0, prune_m=0):
-    if not 0.0 <= args.sparsity_ratio <= 1.0:
-        raise ValueError("sparsity_ratio must be in [0, 1]")
-    if args.reorder_blocks < 1:
-        raise ValueError("reorder_blocks must be at least 1")
+    validate_elastic_sparsegpt_stages([args.sparsity_ratio])
     if prune_n != 0 or prune_m != 0:
         raise ValueError("elastic_sparsegpt supports unstructured sparsity only")
 
@@ -318,8 +324,17 @@ def prune_elastic_sparsegpt(
     dev,
     prune_n=0,
     prune_m=0,
+    sparsity=None,
+    previous_sparsity=0.0,
+    permutations=None,
 ):
-    validate_elastic_sparsegpt_args(args, prune_n=prune_n, prune_m=prune_m)
+    sparsity = args.sparsity_ratio if sparsity is None else sparsity
+    validate_elastic_sparsegpt_stages([sparsity])
+    if prune_n != 0 or prune_m != 0:
+        raise ValueError("elastic_sparsegpt supports unstructured sparsity only")
+    if not 0.0 <= previous_sparsity < sparsity:
+        raise ValueError("previous_sparsity must be smaller than sparsity")
+    permutations = {} if permutations is None else permutations
     print('Starting elastic SparseGPT ...')
     dataloader, _ = get_loaders(
         "c4",
@@ -407,9 +422,11 @@ def prune_elastic_sparsegpt(
         for name, pruner in pruners.items():
             print(layer_index, name)
             print('Elastic pruning ...')
-            pruner.fasterprune(
-                args.sparsity_ratio,
-                reorder_blocks=args.reorder_blocks,
+            key = (layer_index, name)
+            permutations[key] = pruner.fasterprune(
+                sparsity,
+                previous_sparsity=previous_sparsity,
+                permutation=permutations.get(key),
                 percdamp=0.01,
                 blocksize=128,
             )
@@ -428,6 +445,7 @@ def prune_elastic_sparsegpt(
 
     model.config.use_cache = use_cache
     torch.cuda.empty_cache()
+    return permutations
 
 
 

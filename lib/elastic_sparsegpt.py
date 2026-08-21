@@ -1,4 +1,10 @@
-"""Experimental reordered SparseGPT helpers and pruning implementation."""
+"""Prefix-stage, reordered SparseGPT pruning.
+
+Columns are ranked once per linear layer, then processed left-to-right in
+that reordered coordinate system. A target global sparsity ``p`` activates
+only the first ``p / 0.8`` of columns; every activated compensation segment
+selects an approximately 80% SparseGPT mask from its current weights.
+"""
 
 import torch
 import torch.nn as nn
@@ -7,41 +13,79 @@ import transformers
 from .sparsegpt import SparseGPT
 
 
-def balanced_group_slices(columns: int, groups: int) -> list[tuple[int, int]]:
-    """Split columns into contiguous groups whose widths differ by at most one."""
-    if groups < 1:
-        raise ValueError("reorder_blocks must be at least 1")
-    if groups > columns:
-        raise ValueError("reorder_blocks cannot exceed the layer column count")
-
-    base_width, wider_group_count = divmod(columns, groups)
-    slices = []
-    start = 0
-    for group_index in range(groups):
-        width = base_width + int(group_index < wider_group_count)
-        end = start + width
-        slices.append((start, end))
-        start = end
-    return slices
+MAX_SPARSITY = 0.8
 
 
-def allocate_group_budgets(
-    rows: int,
+def prefix_column_count(
     columns: int,
     sparsity: float,
-    slices: list[tuple[int, int]],
-) -> list[int]:
-    """Allocate an exact global weight budget to groups from left to right."""
-    if not 0.0 <= sparsity <= 1.0:
-        raise ValueError("sparsity_ratio must be in [0, 1]")
+    max_sparsity: float = MAX_SPARSITY,
+) -> int:
+    """Return the reordered-column prefix active at a target sparsity."""
+    if columns < 1:
+        raise ValueError("columns must be positive")
+    if not 0.0 <= sparsity <= max_sparsity:
+        raise ValueError("sparsity must be in [0, max_sparsity]")
+    return round(columns * sparsity / max_sparsity)
 
-    remaining = round(sparsity * rows * columns)
+
+def iter_prefix_segments(
+    columns: int,
+    sparsity: float,
+    blocksize: int,
+    max_sparsity: float = MAX_SPARSITY,
+) -> list[tuple[int, int]]:
+    """Split the active prefix into compensation segments of at most blocksize."""
+    if blocksize < 1:
+        raise ValueError("blocksize must be positive")
+    prefix = prefix_column_count(columns, sparsity, max_sparsity)
+    return [
+        (start, min(start + blocksize, prefix))
+        for start in range(0, prefix, blocksize)
+    ]
+
+
+def iter_stage_segments(
+    columns: int,
+    previous_sparsity: float,
+    sparsity: float,
+    blocksize: int,
+    max_sparsity: float = MAX_SPARSITY,
+) -> list[tuple[int, int]]:
+    """Split only the newly activated prefix interval into compensation segments."""
+    if not 0.0 <= previous_sparsity < sparsity <= max_sparsity:
+        raise ValueError("stage sparsities must satisfy 0 <= previous < current <= max")
+    if blocksize < 1:
+        raise ValueError("blocksize must be positive")
+
+    start = prefix_column_count(columns, previous_sparsity, max_sparsity)
+    end = prefix_column_count(columns, sparsity, max_sparsity)
+    return [
+        (segment_start, min(segment_start + blocksize, end))
+        for segment_start in range(start, end, blocksize)
+    ]
+
+
+def allocate_segment_budgets(
+    rows: int,
+    segments: list[tuple[int, int]],
+    total_budget: int,
+) -> list[int]:
+    """Distribute an exact target count proportionally over active segments."""
+    capacities = [rows * (end - start) for start, end in segments]
+    total_capacity = sum(capacities)
+    if not 0 <= total_budget <= total_capacity:
+        raise ValueError("total_budget must fit inside the active prefix")
+
     budgets = []
-    for start, end in slices:
-        capacity = rows * (end - start)
-        budget = min(remaining, capacity)
+    cumulative_capacity = 0
+    allocated = 0
+    for capacity in capacities:
+        cumulative_capacity += capacity
+        cumulative_budget = round(total_budget * cumulative_capacity / total_capacity)
+        budget = cumulative_budget - allocated
         budgets.append(budget)
-        remaining -= budget
+        allocated += budget
     return budgets
 
 
@@ -58,50 +102,60 @@ def column_permutation(
     weight: torch.Tensor,
     hessian_factor: torch.Tensor,
 ) -> torch.Tensor:
-    """Rank input columns by their mean original-order SparseGPT score."""
+    """Rank all input columns from low to high SparseGPT score."""
     denominator = torch.diag(hessian_factor).reshape(1, -1).square()
     column_scores = (weight.float().square() / denominator).mean(dim=0)
     return torch.argsort(column_scores, stable=True)
 
 
-def build_grouped_mask(
+def build_block_mask(
     scores: torch.Tensor,
-    slices: list[tuple[int, int]],
-    budgets: list[int],
+    sparsity: float | None = None,
+    budget: int | None = None,
 ) -> torch.Tensor:
-    """Mask stable score-ranking prefixes within ordered column groups."""
-    if len(slices) != len(budgets):
-        raise ValueError("each allocation group must have one budget")
+    """Prune an exact stable prefix of the lowest scores in one segment."""
+    if (sparsity is None) == (budget is None):
+        raise ValueError("provide exactly one of sparsity or budget")
+    flat_scores = scores.reshape(-1)
+    if sparsity is not None:
+        if not 0.0 <= sparsity <= 1.0:
+            raise ValueError("sparsity must be in [0, 1]")
+        budget = round(sparsity * flat_scores.numel())
+    if not 0 <= budget <= flat_scores.numel():
+        raise ValueError("budget must fit inside the block")
 
-    rows = scores.shape[0]
-    mask = torch.zeros_like(scores, dtype=torch.bool)
-    for (start, end), budget in zip(slices, budgets):
-        group_scores = scores[:, start:end].reshape(-1)
-        if not 0 <= budget <= group_scores.numel():
-            raise ValueError("group budget must be within group capacity")
-        order = torch.argsort(group_scores, stable=True)
-        group_mask = torch.zeros_like(group_scores, dtype=torch.bool)
-        group_mask[order[:budget]] = True
-        mask[:, start:end] = group_mask.reshape(rows, end - start)
-    return mask
+    order = torch.argsort(flat_scores, stable=True)
+    flat_mask = torch.zeros_like(flat_scores, dtype=torch.bool)
+    flat_mask[order[:budget]] = True
+    return flat_mask.reshape_as(scores)
 
 
 class ElasticSparseGPT(SparseGPT):
-    """SparseGPT with an ordered, grouped, fixed unstructured mask."""
+    """SparseGPT with full-layer reordering and staged prefix pruning."""
 
     def fasterprune(
         self,
         sparsity: float,
-        reorder_blocks: int = 5,
+        previous_sparsity: float = 0.0,
+        permutation: torch.Tensor | None = None,
         blocksize: int = 128,
         percdamp: float = 0.01,
-    ) -> None:
-        slices = balanced_group_slices(self.columns, reorder_blocks)
-        budgets = allocate_group_budgets(
-            self.rows,
+    ) -> torch.Tensor:
+        """Prune only one newly opened prefix stage and return its permutation."""
+        segments = iter_stage_segments(
             self.columns,
+            previous_sparsity,
             sparsity,
-            slices,
+            blocksize,
+        )
+        target_budget = (
+            round(sparsity * self.rows * self.columns)
+            - round(previous_sparsity * self.rows * self.columns)
+        )
+        segment_budgets = allocate_segment_budgets(
+            self.rows,
+            segments,
+            target_budget,
         )
 
         W = self.layer.weight.data.clone()
@@ -118,35 +172,33 @@ class ElasticSparseGPT(SparseGPT):
         W[:, dead] = 0
 
         damp = percdamp * torch.mean(torch.diag(H))
-        diag = torch.arange(self.columns, device=self.dev)
-        H[diag, diag] += damp
+        diagonal_indices = torch.arange(self.columns, device=self.dev)
+        H[diagonal_indices, diagonal_indices] += damp
 
         hessian_inverse = torch.cholesky_inverse(torch.linalg.cholesky(H))
-        original_factor = torch.linalg.cholesky(hessian_inverse, upper=True)
-        permutation = column_permutation(W, original_factor)
+        if permutation is None:
+            original_factor = torch.linalg.cholesky(hessian_inverse, upper=True)
+            permutation = column_permutation(W, original_factor)
+        else:
+            permutation = permutation.to(self.dev)
         inverse_permutation = invert_permutation(permutation)
 
         W = W[:, permutation]
         hessian_inverse = hessian_inverse[permutation][:, permutation]
         hessian_factor = torch.linalg.cholesky(hessian_inverse, upper=True)
 
-        scores = W.square() / torch.diag(hessian_factor).reshape(1, -1).square()
-        mask = build_grouped_mask(scores, slices, budgets)
-
-        for block_start in range(0, self.columns, blocksize):
-            block_end = min(block_start + blocksize, self.columns)
-            block_columns = block_end - block_start
-
+        for (block_start, block_end), budget in zip(segments, segment_budgets):
             block_weight = W[:, block_start:block_end].clone()
             quantized = torch.zeros_like(block_weight)
             errors = torch.zeros_like(block_weight)
-            block_factor = hessian_factor[
-                block_start:block_end,
-                block_start:block_end,
-            ]
-            block_mask = mask[:, block_start:block_end]
+            block_factor = hessian_factor[block_start:block_end, block_start:block_end]
 
-            for column in range(block_columns):
+            scores = block_weight.square() / torch.diag(block_factor).reshape(
+                1, -1
+            ).square()
+            block_mask = build_block_mask(scores, budget=budget)
+
+            for column in range(block_end - block_start):
                 weight = block_weight[:, column]
                 diagonal = block_factor[column, column]
 
@@ -173,3 +225,4 @@ class ElasticSparseGPT(SparseGPT):
         self.layer.weight.data = W.reshape(self.layer.weight.shape).to(
             self.layer.weight.data.dtype
         )
+        return permutation.detach().cpu()
