@@ -1,6 +1,6 @@
 # Elastic Reordered SparseGPT: Feasibility Prototype
 
-Date: 2026-08-21  
+Date: 2026-08-21
 Status: Proposed for implementation
 
 ## 1. Objective
