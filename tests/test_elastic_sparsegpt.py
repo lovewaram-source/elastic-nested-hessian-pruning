@@ -68,6 +68,24 @@ class MaskPlanningTests(unittest.TestCase):
             torch.equal(column_permutation(weight, factor), torch.tensor([1, 2, 0]))
         )
 
+    def test_column_order_uses_cost_of_weights_that_will_be_pruned(self):
+        from lib.elastic_sparsegpt import column_permutation
+
+        weight = torch.tensor(
+            [
+                [1.0, 2.0],
+                [1.0, 2.0],
+                [1.0, 2.0],
+                [1.0, 2.0],
+                [10.0, 2.0],
+            ]
+        )
+        factor = torch.eye(2)
+
+        self.assertTrue(
+            torch.equal(column_permutation(weight, factor), torch.tensor([0, 1]))
+        )
+
     def test_inverse_permutation_restores_columns(self):
         from lib.elastic_sparsegpt import invert_permutation
 
@@ -79,6 +97,70 @@ class MaskPlanningTests(unittest.TestCase):
         self.assertTrue(torch.equal(restored, weight))
 
 class ElasticCompensationTests(unittest.TestCase):
+    def test_prepared_plan_can_apply_two_nested_stages_without_a_new_hessian(self):
+        from torch import nn
+
+        from lib.elastic_sparsegpt import (
+            ElasticSparseGPT,
+            apply_elastic_sparsegpt_stage,
+        )
+
+        layer = nn.Linear(8, 2, bias=False)
+        layer.weight.data.copy_(
+            torch.arange(1, 17, dtype=torch.float32).reshape(2, 8)
+        )
+        collector = ElasticSparseGPT(layer)
+        collector.H = torch.eye(8)
+        plan = collector.prepare_plan(percdamp=0.01)
+
+        apply_elastic_sparsegpt_stage(
+            layer, plan, 0.10, 0.0, blocksize=2
+        )
+        mask_10 = layer.weight == 0
+        apply_elastic_sparsegpt_stage(
+            layer, plan, 0.20, 0.10, blocksize=2
+        )
+        mask_20 = layer.weight == 0
+
+        self.assertEqual(int(mask_10.sum()), 2)
+        self.assertEqual(int(mask_20.sum()), 3)
+        self.assertTrue(torch.all(mask_10 <= mask_20))
+        self.assertIsNone(collector.H)
+
+    def test_later_stage_does_not_change_the_frozen_reordered_prefix(self):
+        from torch import nn
+
+        from lib.elastic_sparsegpt import (
+            ElasticSparseGPT,
+            apply_elastic_sparsegpt_stage,
+            prefix_column_count,
+        )
+
+        layer = nn.Linear(8, 2, bias=False)
+        layer.weight.data.copy_(
+            torch.arange(1, 17, dtype=torch.float32).reshape(2, 8)
+        )
+        collector = ElasticSparseGPT(layer)
+        collector.H = torch.eye(8)
+        plan = collector.prepare_plan(percdamp=0.01)
+
+        apply_elastic_sparsegpt_stage(
+            layer, plan, 0.10, 0.0, blocksize=2
+        )
+        reordered_after_10 = layer.weight[:, plan.permutation].clone()
+        apply_elastic_sparsegpt_stage(
+            layer, plan, 0.20, 0.10, blocksize=2
+        )
+        reordered_after_20 = layer.weight[:, plan.permutation]
+        frozen_end = prefix_column_count(8, 0.10)
+
+        self.assertTrue(
+            torch.equal(
+                reordered_after_20[:, :frozen_end],
+                reordered_after_10[:, :frozen_end],
+            )
+        )
+
     def test_second_stage_preserves_existing_zeros_and_adds_only_new_zeros(self):
         from torch import nn
 

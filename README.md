@@ -57,7 +57,7 @@ We provide a quick overview of the arguments:
 
 ### Elastic Reordered SparseGPT experiment
 
-The experimental `elastic_sparsegpt` method ranks all input columns from low to high importance once per linear layer. For a target sparsity `p` in `[0.1, 0.8]`, it activates only the reordered prefix `p / 0.8` of columns and dynamically applies an 80% SparseGPT mask inside each 128-column compensation segment. Masks are never generated for the whole layer in advance: every segment is scored after preceding compensation has updated its weights. Passing `--elastic_sparsities` advances one model through an increasing sequence of stages and writes a checkpoint result for every stage.
+The experimental `elastic_sparsegpt` method ranks all input columns once per linear layer by the predicted SparseGPT loss of pruning the lowest-scored 80% of weights in that column. For a target sparsity `p` in `[0.1, 0.8]`, it activates only the reordered prefix `p / 0.8` of columns and dynamically applies an 80% SparseGPT mask inside each 128-column compensation segment. Masks are never generated for the whole layer in advance: every segment is scored after preceding compensation has updated its weights. Passing `--elastic_sparsities` advances one model through an increasing sequence of stages and writes a checkpoint result for every stage.
 
 Use identical model, calibration sample, seed, and sparsity settings for the baseline and experimental runs:
 

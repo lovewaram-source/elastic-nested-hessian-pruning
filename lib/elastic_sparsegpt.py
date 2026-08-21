@@ -6,6 +6,8 @@ only the first ``p / 0.8`` of columns; every activated compensation segment
 selects an approximately 80% SparseGPT mask from its current weights.
 """
 
+from dataclasses import dataclass
+
 import torch
 import torch.nn as nn
 import transformers
@@ -102,10 +104,23 @@ def column_permutation(
     weight: torch.Tensor,
     hessian_factor: torch.Tensor,
 ) -> torch.Tensor:
-    """Rank all input columns from low to high SparseGPT score."""
+    """Rank columns by the predicted cost of pruning their lowest 80%."""
     denominator = torch.diag(hessian_factor).reshape(1, -1).square()
-    column_scores = (weight.float().square() / denominator).mean(dim=0)
-    return torch.argsort(column_scores, stable=True)
+    scores = weight.float().square() / denominator
+    prune_count = round(MAX_SPARSITY * scores.shape[0])
+    retained_count = scores.shape[0] - prune_count
+
+    column_costs = scores.sum(dim=0)
+    if retained_count:
+        retained_scores = torch.topk(
+            scores,
+            retained_count,
+            dim=0,
+            largest=True,
+            sorted=False,
+        ).values
+        column_costs -= retained_scores.sum(dim=0)
+    return torch.argsort(column_costs, stable=True)
 
 
 def build_block_mask(
@@ -130,8 +145,161 @@ def build_block_mask(
     return flat_mask.reshape_as(scores)
 
 
+@dataclass(frozen=True)
+class ElasticSparseGPTPlan:
+    """Reusable second-order statistics for one reordered linear layer."""
+
+    permutation: torch.Tensor
+    hessian_factor: torch.Tensor
+    dead_columns: torch.Tensor
+
+    def validate_for(self, columns: int) -> None:
+        if self.permutation.shape != (columns,):
+            raise ValueError("plan permutation does not match layer columns")
+        if self.hessian_factor.shape != (columns, columns):
+            raise ValueError("plan Hessian factor does not match layer columns")
+        if self.dead_columns.shape != (columns,):
+            raise ValueError("plan dead-column mask does not match layer columns")
+
+    def cpu(self) -> "ElasticSparseGPTPlan":
+        return ElasticSparseGPTPlan(
+            permutation=self.permutation.detach().cpu(),
+            hessian_factor=self.hessian_factor.detach().float().cpu(),
+            dead_columns=self.dead_columns.detach().cpu(),
+        )
+
+
+def _weight_matrix(layer: nn.Module) -> torch.Tensor:
+    weight = layer.weight.data.clone()
+    if isinstance(layer, nn.Conv2d):
+        weight = weight.flatten(1)
+    if isinstance(layer, transformers.Conv1D):
+        weight = weight.t()
+    return weight.float()
+
+
+@torch.no_grad()
+def apply_elastic_sparsegpt_stage(
+    layer: nn.Module,
+    plan: ElasticSparseGPTPlan,
+    sparsity: float,
+    previous_sparsity: float = 0.0,
+    blocksize: int = 128,
+) -> None:
+    """Apply only one new prefix interval using a previously prepared plan."""
+    weight = _weight_matrix(layer)
+    rows, columns = weight.shape
+    plan.validate_for(columns)
+
+    segments = iter_stage_segments(
+        columns,
+        previous_sparsity,
+        sparsity,
+        blocksize,
+    )
+    target_budget = (
+        round(sparsity * rows * columns)
+        - round(previous_sparsity * rows * columns)
+    )
+    segment_budgets = allocate_segment_budgets(rows, segments, target_budget)
+
+    device = weight.device
+    permutation = plan.permutation.to(device)
+    inverse_permutation = invert_permutation(permutation)
+    hessian_factor = plan.hessian_factor.to(device=device, dtype=torch.float32)
+    dead_columns = plan.dead_columns.to(device)
+
+    weight[:, dead_columns] = 0
+    weight = weight[:, permutation]
+
+    for (block_start, block_end), budget in zip(segments, segment_budgets):
+        block_weight = weight[:, block_start:block_end].clone()
+        quantized = torch.zeros_like(block_weight)
+        errors = torch.zeros_like(block_weight)
+        block_factor = hessian_factor[
+            block_start:block_end,
+            block_start:block_end,
+        ]
+
+        scores = block_weight.square() / torch.diag(block_factor).reshape(
+            1, -1
+        ).square()
+        block_mask = build_block_mask(scores, budget=budget)
+
+        for column in range(block_end - block_start):
+            current_weight = block_weight[:, column]
+            diagonal = block_factor[column, column]
+
+            pruned_weight = current_weight.clone()
+            pruned_weight[block_mask[:, column]] = 0
+            quantized[:, column] = pruned_weight
+
+            error = (current_weight - pruned_weight) / diagonal
+            block_weight[:, column:] -= error.unsqueeze(1).matmul(
+                block_factor[column, column:].unsqueeze(0)
+            )
+            errors[:, column] = error
+
+        weight[:, block_start:block_end] = quantized
+        weight[:, block_end:] -= errors.matmul(
+            hessian_factor[block_start:block_end, block_end:]
+        )
+
+    weight = weight[:, inverse_permutation]
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    if isinstance(layer, transformers.Conv1D):
+        weight = weight.t()
+    layer.weight.data = weight.reshape(layer.weight.shape).to(
+        layer.weight.data.dtype
+    )
+
+
 class ElasticSparseGPT(SparseGPT):
     """SparseGPT with full-layer reordering and staged prefix pruning."""
+
+    def prepare_plan(
+        self,
+        percdamp: float = 0.01,
+        permutation: torch.Tensor | None = None,
+    ) -> ElasticSparseGPTPlan:
+        """Consume the collected Hessian and return a reusable CPU plan."""
+        weight = _weight_matrix(self.layer)
+        hessian = self.H
+        self.H = None
+        if hessian is None:
+            raise ValueError("Hessian has already been consumed")
+
+        dead_columns = torch.diag(hessian) == 0
+        hessian[dead_columns, dead_columns] = 1
+        weight[:, dead_columns] = 0
+
+        damp = percdamp * torch.mean(torch.diag(hessian))
+        diagonal_indices = torch.arange(self.columns, device=self.dev)
+        hessian[diagonal_indices, diagonal_indices] += damp
+
+        hessian_inverse = torch.cholesky_inverse(
+            torch.linalg.cholesky(hessian)
+        )
+        original_factor = torch.linalg.cholesky(
+            hessian_inverse,
+            upper=True,
+        )
+        if permutation is None:
+            permutation = column_permutation(weight, original_factor)
+        else:
+            permutation = permutation.to(self.dev)
+
+        permuted_inverse = hessian_inverse[permutation][:, permutation]
+        hessian_factor = torch.linalg.cholesky(
+            permuted_inverse,
+            upper=True,
+        )
+        return ElasticSparseGPTPlan(
+            permutation=permutation,
+            hessian_factor=hessian_factor,
+            dead_columns=dead_columns,
+        ).cpu()
 
     def fasterprune(
         self,
@@ -141,88 +309,16 @@ class ElasticSparseGPT(SparseGPT):
         blocksize: int = 128,
         percdamp: float = 0.01,
     ) -> torch.Tensor:
-        """Prune only one newly opened prefix stage and return its permutation."""
-        segments = iter_stage_segments(
-            self.columns,
-            previous_sparsity,
+        """Compatibility wrapper that prepares once and applies one stage."""
+        plan = self.prepare_plan(
+            percdamp=percdamp,
+            permutation=permutation,
+        )
+        apply_elastic_sparsegpt_stage(
+            self.layer,
+            plan,
             sparsity,
-            blocksize,
+            previous_sparsity=previous_sparsity,
+            blocksize=blocksize,
         )
-        target_budget = (
-            round(sparsity * self.rows * self.columns)
-            - round(previous_sparsity * self.rows * self.columns)
-        )
-        segment_budgets = allocate_segment_budgets(
-            self.rows,
-            segments,
-            target_budget,
-        )
-
-        W = self.layer.weight.data.clone()
-        if isinstance(self.layer, nn.Conv2d):
-            W = W.flatten(1)
-        if isinstance(self.layer, transformers.Conv1D):
-            W = W.t()
-        W = W.float()
-
-        H = self.H
-        self.H = None
-        dead = torch.diag(H) == 0
-        H[dead, dead] = 1
-        W[:, dead] = 0
-
-        damp = percdamp * torch.mean(torch.diag(H))
-        diagonal_indices = torch.arange(self.columns, device=self.dev)
-        H[diagonal_indices, diagonal_indices] += damp
-
-        hessian_inverse = torch.cholesky_inverse(torch.linalg.cholesky(H))
-        if permutation is None:
-            original_factor = torch.linalg.cholesky(hessian_inverse, upper=True)
-            permutation = column_permutation(W, original_factor)
-        else:
-            permutation = permutation.to(self.dev)
-        inverse_permutation = invert_permutation(permutation)
-
-        W = W[:, permutation]
-        hessian_inverse = hessian_inverse[permutation][:, permutation]
-        hessian_factor = torch.linalg.cholesky(hessian_inverse, upper=True)
-
-        for (block_start, block_end), budget in zip(segments, segment_budgets):
-            block_weight = W[:, block_start:block_end].clone()
-            quantized = torch.zeros_like(block_weight)
-            errors = torch.zeros_like(block_weight)
-            block_factor = hessian_factor[block_start:block_end, block_start:block_end]
-
-            scores = block_weight.square() / torch.diag(block_factor).reshape(
-                1, -1
-            ).square()
-            block_mask = build_block_mask(scores, budget=budget)
-
-            for column in range(block_end - block_start):
-                weight = block_weight[:, column]
-                diagonal = block_factor[column, column]
-
-                pruned_weight = weight.clone()
-                pruned_weight[block_mask[:, column]] = 0
-                quantized[:, column] = pruned_weight
-
-                error = (weight - pruned_weight) / diagonal
-                block_weight[:, column:] -= error.unsqueeze(1).matmul(
-                    block_factor[column, column:].unsqueeze(0)
-                )
-                errors[:, column] = error
-
-            W[:, block_start:block_end] = quantized
-            W[:, block_end:] -= errors.matmul(
-                hessian_factor[block_start:block_end, block_end:]
-            )
-
-        W = W[:, inverse_permutation]
-        if self.dev.type == "cuda":
-            torch.cuda.synchronize()
-        if isinstance(self.layer, transformers.Conv1D):
-            W = W.t()
-        self.layer.weight.data = W.reshape(self.layer.weight.shape).to(
-            self.layer.weight.data.dtype
-        )
-        return permutation.detach().cpu()
+        return plan.permutation
