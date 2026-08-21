@@ -1,5 +1,6 @@
 import argparse
 import os 
+import time
 import numpy as np
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -15,6 +16,7 @@ from lib.prune import (
     prune_wanda,
 )
 from lib.eval import eval_ppl, eval_zero_shot
+from lib.reporting import format_result_log
 
 print('torch', version('torch'))
 print('transformers', version('transformers'))
@@ -81,8 +83,10 @@ def main():
         device = model.hf_device_map["lm_head"]
     print("use device ", device)
 
+    pruning_time_seconds = 0.0
     if args.sparsity_ratio != 0:
         print("pruning starts")
+        pruning_start = time.perf_counter()
         if args.prune_method == "wanda":
             prune_wanda(args, model, tokenizer, device, prune_n=prune_n, prune_m=prune_m)
         elif args.prune_method == "magnitude":
@@ -100,6 +104,8 @@ def main():
             )
         elif "ablate" in args.prune_method:
             prune_ablate(args, model, tokenizer, device, prune_n=prune_n, prune_m=prune_m)
+        pruning_time_seconds = time.perf_counter() - pruning_start
+        print(f"pruning time {pruning_time_seconds:.2f} seconds")
 
     ################################################################
     print("*"*30)
@@ -114,8 +120,7 @@ def main():
         os.makedirs(args.save)
     save_filepath = os.path.join(args.save, f"log_{args.prune_method}.txt")
     with open(save_filepath, "w") as f:
-        print("method\tactual_sparsity\tppl_test", file=f, flush=True)
-        print(f"{args.prune_method}\t{sparsity_ratio:.4f}\t{ppl_test:.4f}", file=f, flush=True)
+        f.write(format_result_log(args.prune_method, sparsity_ratio, ppl_test, pruning_time_seconds))
 
     if args.eval_zero_shot:
         accelerate=False
