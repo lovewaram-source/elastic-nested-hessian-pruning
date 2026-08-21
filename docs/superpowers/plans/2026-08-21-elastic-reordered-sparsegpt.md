@@ -408,26 +408,32 @@ git commit -m "feat: orchestrate elastic SparseGPT pruning"
 - Produces: CLI method `--prune_method elastic_sparsegpt`.
 - Produces: CLI integer option `--reorder_blocks`, default `5`.
 
-- [ ] **Step 1: Write a failing source-level CLI smoke test**
+- [ ] **Step 1: Write a failing CLI parser behavior test**
 
 ```python
 class CliExposureTests(unittest.TestCase):
-    def test_main_exposes_elastic_method_and_block_argument(self):
-        source = open("main.py", encoding="utf-8").read()
-        self.assertIn('"elastic_sparsegpt"', source)
-        self.assertIn("--reorder_blocks", source)
-        self.assertIn("prune_elastic_sparsegpt(args", source)
+    def test_parser_accepts_elastic_method_and_ten_groups(self):
+        from main import build_parser
+
+        args = build_parser().parse_args([
+            "--prune_method", "elastic_sparsegpt",
+            "--sparsity_type", "unstructured",
+            "--reorder_blocks", "10",
+        ])
+
+        self.assertEqual(args.prune_method, "elastic_sparsegpt")
+        self.assertEqual(args.reorder_blocks, 10)
 ```
 
 - [ ] **Step 2: Run the CLI smoke test and verify it fails**
 
 Run: `python -m unittest tests.test_elastic_sparsegpt.CliExposureTests -v`
 
-Expected: FAIL because `main.py` does not contain the experimental method.
+Expected: FAIL because `main.build_parser` does not exist.
 
 - [ ] **Step 3: Add the import, parser option, choice, and dispatch**
 
-Update the pruning import to include `prune_elastic_sparsegpt`. Add `"elastic_sparsegpt"` to the `--prune_method` choices. Add:
+Extract parser creation into `build_parser()`, update `main()` to call `build_parser().parse_args()`, and update the pruning import to include `prune_elastic_sparsegpt`. Add `"elastic_sparsegpt"` to the `--prune_method` choices. Add:
 
 ```python
 parser.add_argument(

@@ -47,6 +47,14 @@ class GroupAllocationTests(unittest.TestCase):
             [6] + [0] * 9,
         )
 
+    def test_rejects_invalid_group_counts(self):
+        from lib.elastic_sparsegpt import balanced_group_slices
+
+        with self.assertRaisesRegex(ValueError, "at least 1"):
+            balanced_group_slices(columns=4, groups=0)
+        with self.assertRaisesRegex(ValueError, "cannot exceed"):
+            balanced_group_slices(columns=4, groups=5)
+
 
 class MaskPlanningTests(unittest.TestCase):
     def test_columns_are_ordered_from_low_to_high_sparsegpt_score(self):
@@ -101,6 +109,47 @@ class MaskPlanningTests(unittest.TestCase):
         self.assertTrue(torch.all(masks[0] <= masks[1]))
         self.assertTrue(torch.all(masks[1] <= masks[2]))
         self.assertEqual([int(mask.sum()) for mask in masks], [2, 4, 6])
+
+    def test_zero_and_full_sparsity_have_exact_counts(self):
+        from lib.elastic_sparsegpt import (
+            allocate_group_budgets,
+            balanced_group_slices,
+            build_grouped_mask,
+        )
+
+        scores = torch.arange(24, dtype=torch.float32).reshape(3, 8)
+        slices = balanced_group_slices(8, 5)
+        zero_mask = build_grouped_mask(
+            scores,
+            slices,
+            allocate_group_budgets(3, 8, 0.0, slices),
+        )
+        full_mask = build_grouped_mask(
+            scores,
+            slices,
+            allocate_group_budgets(3, 8, 1.0, slices),
+        )
+
+        self.assertEqual(int(zero_mask.sum()), 0)
+        self.assertEqual(int(full_mask.sum()), 24)
+
+    def test_ten_percent_with_ten_groups_exhausts_first_group(self):
+        from lib.elastic_sparsegpt import (
+            allocate_group_budgets,
+            balanced_group_slices,
+            build_grouped_mask,
+        )
+
+        scores = torch.arange(60, dtype=torch.float32).reshape(3, 20)
+        slices = balanced_group_slices(20, 10)
+        mask = build_grouped_mask(
+            scores,
+            slices,
+            allocate_group_budgets(3, 20, 0.10, slices),
+        )
+
+        self.assertTrue(torch.all(mask[:, :2]))
+        self.assertFalse(torch.any(mask[:, 2:]))
 
 
 class ElasticCompensationTests(unittest.TestCase):

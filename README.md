@@ -55,6 +55,45 @@ We provide a quick overview of the arguments:
 - `--use_variant`: Whether to use the Wanda variant, default is `False`. 
 - `--save`: Specifies the directory where the result will be stored.
 
+### Elastic Reordered SparseGPT experiment
+
+The experimental `elastic_sparsegpt` method ranks input columns from low to high importance, divides them into ordered allocation groups, builds an exact unstructured mask inside those groups, and applies SparseGPT Hessian compensation. Phase one evaluates one sparsity ratio per invocation.
+
+Use identical model, calibration sample, seed, and sparsity settings for the baseline and experimental runs:
+
+```sh
+python main.py \
+  --model <MODEL_PATH> \
+  --prune_method sparsegpt \
+  --sparsity_type unstructured \
+  --sparsity_ratio 0.3 \
+  --nsamples 128 \
+  --seed 0 \
+  --save results/sparsegpt-030
+
+python main.py \
+  --model <MODEL_PATH> \
+  --prune_method elastic_sparsegpt \
+  --sparsity_type unstructured \
+  --sparsity_ratio 0.3 \
+  --reorder_blocks 5 \
+  --nsamples 128 \
+  --seed 0 \
+  --save results/elastic-k5-030
+
+python main.py \
+  --model <MODEL_PATH> \
+  --prune_method elastic_sparsegpt \
+  --sparsity_type unstructured \
+  --sparsity_ratio 0.3 \
+  --reorder_blocks 10 \
+  --nsamples 128 \
+  --seed 0 \
+  --save results/elastic-k10-030
+```
+
+With 10 groups and sparsity targets spaced by 10%, each target exhausts another complete group and can resemble grouped column pruning. With 5 groups, targets at 10%, 30%, and 50% leave a partially pruned frontier group, so they exercise the within-group SparseGPT ranking more directly. This prototype tests model quality and does not yet claim the final one-pass multi-checkpoint speedup.
+
 For structured N:M sparsity, set the argument `--sparsity_type` to "2:4" or "4:8". An illustrative command is provided below:
 ```sh
 python main.py \
@@ -128,4 +167,4 @@ This project is released under the MIT license. Please see the [LICENSE](LICENSE
 Feel free to discuss papers/code with us through issues/emails!
 
 mingjies at cs.cmu.edu  
-liuzhuangthu at gmail.com 
+liuzhuangthu at gmail.com
