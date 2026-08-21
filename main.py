@@ -7,17 +7,21 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from importlib.metadata import version
 
 from lib.prune import (
+    apply_elastic_sparsegpt_stage,
     check_sparsity,
     find_layers,
+    prepare_elastic_sparsegpt,
     prune_ablate,
     prune_elastic_sparsegpt,
     prune_magnitude,
     prune_sparsegpt,
     prune_wanda,
+    run_prepared_elastic_stages,
     validate_elastic_sparsegpt_stages,
 )
+from lib.elastic_plan_store import make_elastic_plan_store
 from lib.eval import eval_ppl, eval_zero_shot
-from lib.reporting import format_result_log
+from lib.reporting import format_elastic_result_log, format_result_log
 
 print('torch', version('torch'))
 print('transformers', version('transformers'))
@@ -48,6 +52,18 @@ def build_parser():
         nargs='+',
         default=None,
         help='Increasing elastic_sparsegpt checkpoint sparsities, e.g. 0.1 0.2 ... 0.8.',
+    )
+    parser.add_argument(
+        '--elastic_cache_mode',
+        choices=['memory', 'disk'],
+        default='memory',
+        help='Store shared elastic SparseGPT plans in CPU memory or on disk.',
+    )
+    parser.add_argument(
+        '--elastic_cache_dir',
+        type=str,
+        default=None,
+        help='Base directory for temporary disk-backed elastic plans.',
     )
     parser.add_argument("--sparsity_type", type=str, choices=["unstructured", "4:8", "2:4"])
     parser.add_argument("--prune_method", type=str, choices=["magnitude", "wanda", "sparsegpt", "elastic_sparsegpt",
@@ -90,29 +106,53 @@ def main():
         if prune_n != 0 or prune_m != 0:
             raise ValueError("elastic_sparsegpt supports unstructured sparsity only")
 
-        permutations = {}
-        previous_sparsity = 0.0
         multiple_stages = len(elastic_stages) > 1
-        for stage_sparsity in elastic_stages:
-            print(f"elastic stage {previous_sparsity:.1f} -> {stage_sparsity:.1f}")
-            pruning_start = time.perf_counter()
-            permutations = prune_elastic_sparsegpt(
+        plan_store = make_elastic_plan_store(
+            args.elastic_cache_mode,
+            args.elastic_cache_dir,
+        )
+        success = False
+
+        def prepare():
+            prepare_elastic_sparsegpt(
                 args,
                 model,
                 tokenizer,
                 device,
-                prune_n=prune_n,
-                prune_m=prune_m,
-                sparsity=stage_sparsity,
-                previous_sparsity=previous_sparsity,
-                permutations=permutations,
+                plan_store,
             )
-            pruning_time_seconds = time.perf_counter() - pruning_start
+            return plan_store
 
+        def apply(store, previous_sparsity, stage_sparsity):
+            print(
+                f"elastic stage {previous_sparsity:.1f} -> "
+                f"{stage_sparsity:.1f}"
+            )
+            apply_elastic_sparsegpt_stage(
+                model,
+                device,
+                store,
+                stage_sparsity,
+                previous_sparsity=previous_sparsity,
+            )
+
+        def on_stage(
+            store,
+            previous_sparsity,
+            stage_sparsity,
+            preparation_time_seconds,
+            stage_pruning_time_seconds,
+            cumulative_pruning_time_seconds,
+        ):
             actual_sparsity = check_sparsity(model)
             print(f"sparsity sanity check {actual_sparsity:.4f}")
             ppl_test = eval_ppl(args, model, tokenizer, device)
             print(f"wikitext perplexity {ppl_test}")
+            print(
+                f"elastic preparation {preparation_time_seconds:.2f}s, "
+                f"stage pruning {stage_pruning_time_seconds:.2f}s, "
+                f"cumulative pruning {cumulative_pruning_time_seconds:.2f}s"
+            )
 
             stage_tag = str(stage_sparsity).replace(".", "")
             stage_save = (
@@ -124,11 +164,13 @@ def main():
             save_filepath = os.path.join(stage_save, "log_elastic_sparsegpt.txt")
             with open(save_filepath, "w") as f:
                 f.write(
-                    format_result_log(
+                    format_elastic_result_log(
                         args.prune_method,
                         actual_sparsity,
                         ppl_test,
-                        pruning_time_seconds,
+                        preparation_time_seconds,
+                        stage_pruning_time_seconds,
+                        cumulative_pruning_time_seconds,
                     )
                 )
 
@@ -140,7 +182,17 @@ def main():
                 )
                 model.save_pretrained(stage_model_path)
                 tokenizer.save_pretrained(stage_model_path)
-            previous_sparsity = stage_sparsity
+
+        try:
+            run_prepared_elastic_stages(
+                elastic_stages,
+                prepare,
+                apply,
+                on_stage,
+            )
+            success = True
+        finally:
+            plan_store.close(success=success)
         return
 
     pruning_time_seconds = 0.0

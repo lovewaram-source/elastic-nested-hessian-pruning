@@ -4,6 +4,25 @@ from lib.reporting import format_result_log
 
 
 class ResultLogFormattingTests(unittest.TestCase):
+    def test_elastic_result_log_separates_shared_and_incremental_time(self):
+        from lib.reporting import format_elastic_result_log
+
+        result_log = format_elastic_result_log(
+            method="elastic_sparsegpt",
+            sparsity_ratio=0.2,
+            perplexity=5.8,
+            preparation_time_seconds=200.0,
+            stage_pruning_time_seconds=18.0,
+            cumulative_pruning_time_seconds=236.0,
+        )
+
+        self.assertEqual(
+            result_log,
+            "method\tactual_sparsity\tppl_test\tpreparation_time_seconds\t"
+            "stage_pruning_time_seconds\tcumulative_pruning_time_seconds\n"
+            "elastic_sparsegpt\t0.2000\t5.8000\t200.00\t18.00\t236.00\n",
+        )
+
     def test_result_log_includes_pruning_duration(self):
         result_log = format_result_log(
             method="wanda",

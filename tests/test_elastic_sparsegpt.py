@@ -478,6 +478,33 @@ class OrchestrationValidationTests(unittest.TestCase):
 
 
 class CliExposureTests(unittest.TestCase):
+    def test_parser_accepts_elastic_disk_cache_options(self):
+        from main import build_parser
+
+        args = build_parser().parse_args(
+            [
+                "--prune_method",
+                "elastic_sparsegpt",
+                "--elastic_cache_mode",
+                "disk",
+                "--elastic_cache_dir",
+                "/tmp/elastic-cache",
+            ]
+        )
+
+        self.assertEqual(args.elastic_cache_mode, "disk")
+        self.assertEqual(args.elastic_cache_dir, "/tmp/elastic-cache")
+
+    def test_parser_defaults_to_memory_elastic_cache(self):
+        from main import build_parser
+
+        args = build_parser().parse_args(
+            ["--prune_method", "elastic_sparsegpt"]
+        )
+
+        self.assertEqual(args.elastic_cache_mode, "memory")
+        self.assertIsNone(args.elastic_cache_dir)
+
     def test_parser_removes_the_obsolete_group_count_option(self):
         from main import build_parser
 
