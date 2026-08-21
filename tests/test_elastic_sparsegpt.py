@@ -1,4 +1,5 @@
 import unittest
+from types import SimpleNamespace
 
 import torch
 
@@ -146,6 +147,31 @@ class ElasticCompensationTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "cannot exceed"):
             pruner.fasterprune(0.5, reorder_blocks=4)
+
+
+class OrchestrationValidationTests(unittest.TestCase):
+    def test_rejects_structured_sparsity(self):
+        from lib.prune import validate_elastic_sparsegpt_args
+
+        args = SimpleNamespace(sparsity_ratio=0.5, reorder_blocks=5)
+
+        with self.assertRaisesRegex(ValueError, "unstructured"):
+            validate_elastic_sparsegpt_args(args, prune_n=2, prune_m=4)
+
+    def test_rejects_invalid_ratio(self):
+        from lib.prune import validate_elastic_sparsegpt_args
+
+        args = SimpleNamespace(sparsity_ratio=1.1, reorder_blocks=5)
+
+        with self.assertRaisesRegex(ValueError, r"\[0, 1\]"):
+            validate_elastic_sparsegpt_args(args, prune_n=0, prune_m=0)
+
+    def test_accepts_five_and_ten_groups(self):
+        from lib.prune import validate_elastic_sparsegpt_args
+
+        for groups in (5, 10):
+            args = SimpleNamespace(sparsity_ratio=0.3, reorder_blocks=groups)
+            validate_elastic_sparsegpt_args(args, prune_n=0, prune_m=0)
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@ import heapq
 import torch 
 import torch.nn as nn 
 from .sparsegpt import SparseGPT 
+from .elastic_sparsegpt import ElasticSparseGPT
 from .layerwrapper import WrappedGPT
 from .data import get_loaders 
 
@@ -294,6 +295,135 @@ def prune_sparsegpt(args, model, tokenizer, dev, prune_n=0, prune_m=0):
         layers[i] = layer 
         torch.cuda.empty_cache()
 
+        inps, outs = outs, inps
+
+    model.config.use_cache = use_cache
+    torch.cuda.empty_cache()
+
+
+def validate_elastic_sparsegpt_args(args, prune_n=0, prune_m=0):
+    if not 0.0 <= args.sparsity_ratio <= 1.0:
+        raise ValueError("sparsity_ratio must be in [0, 1]")
+    if args.reorder_blocks < 1:
+        raise ValueError("reorder_blocks must be at least 1")
+    if prune_n != 0 or prune_m != 0:
+        raise ValueError("elastic_sparsegpt supports unstructured sparsity only")
+
+
+@torch.no_grad()
+def prune_elastic_sparsegpt(
+    args,
+    model,
+    tokenizer,
+    dev,
+    prune_n=0,
+    prune_m=0,
+):
+    validate_elastic_sparsegpt_args(args, prune_n=prune_n, prune_m=prune_m)
+    print('Starting elastic SparseGPT ...')
+    dataloader, _ = get_loaders(
+        "c4",
+        nsamples=args.nsamples,
+        seed=args.seed,
+        seqlen=model.seqlen,
+        tokenizer=tokenizer,
+    )
+
+    use_cache = model.config.use_cache
+    model.config.use_cache = False
+    layers = model.model.layers
+
+    if "model.embed_tokens" in model.hf_device_map:
+        dev = model.hf_device_map["model.embed_tokens"]
+
+    dtype = next(iter(model.parameters())).dtype
+    inps = torch.zeros(
+        (args.nsamples, model.seqlen, model.config.hidden_size),
+        dtype=dtype,
+        device=dev,
+    )
+    cache = {'i': 0, 'attention_mask': None, "position_ids": None}
+
+    class Catcher(nn.Module):
+        def __init__(self, module):
+            super().__init__()
+            self.module = module
+
+        def forward(self, inp, **kwargs):
+            inps[cache['i']] = inp
+            cache['i'] += 1
+            cache['attention_mask'] = kwargs['attention_mask']
+            cache['position_ids'] = kwargs['position_ids']
+            raise ValueError
+
+    layers[0] = Catcher(layers[0])
+    for batch in dataloader:
+        try:
+            model(batch[0].to(dev))
+        except ValueError:
+            pass
+    layers[0] = layers[0].module
+    torch.cuda.empty_cache()
+
+    outs = torch.zeros_like(inps)
+    attention_mask = cache['attention_mask']
+    position_ids = cache['position_ids']
+
+    print('Elastic SparseGPT calibration ready.')
+
+    for layer_index, layer in enumerate(layers):
+        if f"model.layers.{layer_index}" in model.hf_device_map:
+            dev = model.hf_device_map[f"model.layers.{layer_index}"]
+            print(f"layer {layer_index} device {dev}")
+            inps = inps.to(dev)
+            outs = outs.to(dev)
+            attention_mask = attention_mask.to(dev)
+            position_ids = position_ids.to(dev)
+
+        subset = find_layers(layer)
+        pruners = {
+            name: ElasticSparseGPT(subset[name])
+            for name in subset
+        }
+
+        def add_batch(name):
+            def hook(_, inp, out):
+                pruners[name].add_batch(inp[0].data, out.data)
+            return hook
+
+        handles = [
+            subset[name].register_forward_hook(add_batch(name))
+            for name in pruners
+        ]
+        for sample_index in range(args.nsamples):
+            outs[sample_index] = layer(
+                inps[sample_index].unsqueeze(0),
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+            )[0]
+        for handle in handles:
+            handle.remove()
+
+        for name, pruner in pruners.items():
+            print(layer_index, name)
+            print('Elastic pruning ...')
+            pruner.fasterprune(
+                args.sparsity_ratio,
+                reorder_blocks=args.reorder_blocks,
+                percdamp=0.01,
+                blocksize=128,
+            )
+            pruner.free()
+
+        for sample_index in range(args.nsamples):
+            outs[sample_index] = layer(
+                inps[sample_index].unsqueeze(0),
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+            )[0]
+
+        layers[layer_index] = layer
+        torch.cuda.empty_cache()
         inps, outs = outs, inps
 
     model.config.use_cache = use_cache
