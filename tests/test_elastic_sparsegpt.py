@@ -87,6 +87,43 @@ class MaskPlanningTests(unittest.TestCase):
             torch.equal(column_permutation(weight, factor), torch.tensor([0, 1]))
         )
 
+    def test_wanda_column_order_uses_calibration_activation_norms(self):
+        from lib.elastic_sparsegpt import column_permutation
+
+        weight = torch.tensor(
+            [
+                [1.0, 5.0],
+                [1.0, 5.0],
+                [1.0, 5.0],
+                [1.0, 5.0],
+                [1.0, 5.0],
+            ]
+        )
+
+        self.assertTrue(
+            torch.equal(
+                column_permutation(
+                    weight,
+                    ordering="wanda",
+                    activation_norms=torch.tensor([10.0, 1.0]),
+                ),
+                torch.tensor([1, 0]),
+            )
+        )
+
+    def test_sparsegpt_ordering_remains_available_for_ablation(self):
+        from lib.elastic_sparsegpt import column_permutation
+
+        weight = torch.tensor([[3.0, 1.0, 2.0], [3.0, 1.0, 2.0]])
+        factor = torch.eye(3)
+
+        self.assertTrue(
+            torch.equal(
+                column_permutation(weight, factor, ordering="sparsegpt"),
+                torch.tensor([1, 2, 0]),
+            )
+        )
+
     def test_inverse_permutation_restores_columns(self):
         from lib.elastic_sparsegpt import invert_permutation
 
@@ -504,6 +541,15 @@ class CliExposureTests(unittest.TestCase):
 
         self.assertEqual(args.elastic_cache_mode, "memory")
         self.assertIsNone(args.elastic_cache_dir)
+
+    def test_parser_defaults_to_wanda_elastic_ordering(self):
+        from main import build_parser
+
+        args = build_parser().parse_args(
+            ["--prune_method", "elastic_sparsegpt"]
+        )
+
+        self.assertEqual(args.elastic_ordering, "wanda")
 
     def test_parser_removes_the_obsolete_group_count_option(self):
         from main import build_parser

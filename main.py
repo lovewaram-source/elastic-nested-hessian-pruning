@@ -65,6 +65,12 @@ def build_parser():
         default=None,
         help='Base directory for temporary disk-backed elastic plans.',
     )
+    parser.add_argument(
+        '--elastic_ordering',
+        choices=['wanda', 'sparsegpt'],
+        default='wanda',
+        help='Global column ordering for elastic_sparsegpt.',
+    )
     parser.add_argument("--sparsity_type", type=str, choices=["unstructured", "4:8", "2:4"])
     parser.add_argument("--prune_method", type=str, choices=["magnitude", "wanda", "sparsegpt", "elastic_sparsegpt",
                         "ablate_mag_seq", "ablate_wanda_seq", "ablate_mag_iter", "ablate_wanda_iter", "search"])

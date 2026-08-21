@@ -102,11 +102,23 @@ def invert_permutation(permutation: torch.Tensor) -> torch.Tensor:
 
 def column_permutation(
     weight: torch.Tensor,
-    hessian_factor: torch.Tensor,
+    hessian_factor: torch.Tensor | None = None,
+    ordering: str = "sparsegpt",
+    activation_norms: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Rank columns by the predicted cost of pruning their lowest 80%."""
-    denominator = torch.diag(hessian_factor).reshape(1, -1).square()
-    scores = weight.float().square() / denominator
+    """Rank columns by their Bottom-80% SparseGPT or Wanda pruning cost."""
+    if ordering == "sparsegpt":
+        if hessian_factor is None:
+            raise ValueError("SparseGPT ordering requires a Hessian factor")
+        denominator = torch.diag(hessian_factor).reshape(1, -1).square()
+        scores = weight.float().square() / denominator
+    elif ordering == "wanda":
+        if activation_norms is None:
+            raise ValueError("Wanda ordering requires calibration activation norms")
+        scores = weight.float().abs() * activation_norms.reshape(1, -1)
+    else:
+        raise ValueError("ordering must be 'sparsegpt' or 'wanda'")
+
     prune_count = round(MAX_SPARSITY * scores.shape[0])
     retained_count = scores.shape[0] - prune_count
 
@@ -262,6 +274,7 @@ class ElasticSparseGPT(SparseGPT):
         self,
         percdamp: float = 0.01,
         permutation: torch.Tensor | None = None,
+        ordering: str = "wanda",
     ) -> ElasticSparseGPTPlan:
         """Consume the collected Hessian and return a reusable CPU plan."""
         weight = _weight_matrix(self.layer)
@@ -270,6 +283,7 @@ class ElasticSparseGPT(SparseGPT):
         if hessian is None:
             raise ValueError("Hessian has already been consumed")
 
+        activation_norms = torch.sqrt(torch.diag(hessian).clamp_min(0))
         dead_columns = torch.diag(hessian) == 0
         hessian[dead_columns, dead_columns] = 1
         weight[:, dead_columns] = 0
@@ -286,7 +300,12 @@ class ElasticSparseGPT(SparseGPT):
             upper=True,
         )
         if permutation is None:
-            permutation = column_permutation(weight, original_factor)
+            permutation = column_permutation(
+                weight,
+                original_factor,
+                ordering=ordering,
+                activation_norms=activation_norms,
+            )
         else:
             permutation = permutation.to(self.dev)
 

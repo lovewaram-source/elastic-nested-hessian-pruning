@@ -57,7 +57,7 @@ We provide a quick overview of the arguments:
 
 ### Elastic Reordered SparseGPT experiment
 
-The experimental `elastic_sparsegpt` method prepares each linear layer once from the same dense-reference calibration pass. Preparation computes one Hessian/Cholesky factor and one global input-column permutation per linear layer. Columns are ranked by the predicted SparseGPT loss of pruning the lowest-scored 80% of weights in that column.
+The experimental `elastic_sparsegpt` method prepares each linear layer once from the same dense-reference calibration pass. Preparation computes one Hessian/Cholesky factor and one global input-column permutation per linear layer. By default, columns are ranked by the Wanda cost of pruning their lowest-scored 80% of weights: `abs(weight) * calibration_activation_norm`. Use `--elastic_ordering sparsegpt` to instead rank columns by the previous Bottom-80% SparseGPT loss for an ablation.
 
 For a target sparsity `p` in `[0.1, 0.8]`, the method activates the reordered prefix `p / 0.8` and applies an 80% SparseGPT mask inside each 128-column compensation segment. The stages form one continuous path: 10% starts from the dense model, 20% freezes the 10% prefix and prunes only the next interval, 30% continues from 20%, and so on. Compensation flows only into columns to the right, so masks are strictly nested.
 
@@ -80,6 +80,7 @@ python main.py \
   --prune_method elastic_sparsegpt \
   --sparsity_type unstructured \
   --elastic_sparsities 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 \
+  --elastic_ordering wanda \
   --elastic_cache_mode memory \
   --nsamples 128 \
   --seed 0 \
@@ -94,6 +95,7 @@ python main.py \
   --prune_method elastic_sparsegpt \
   --sparsity_type unstructured \
   --elastic_sparsities 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 \
+  --elastic_ordering wanda \
   --elastic_cache_mode disk \
   --elastic_cache_dir /data/elastic_sparsegpt_cache \
   --nsamples 128 \

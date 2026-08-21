@@ -442,7 +442,10 @@ def prepare_elastic_sparsegpt(args, model, tokenizer, dev, plan_store):
             plans = {}
             for name, pruner in pruners.items():
                 print(f"preparing elastic plan layer {layer_index} name {name}")
-                plans[name] = pruner.prepare_plan(percdamp=0.01)
+                plans[name] = pruner.prepare_plan(
+                    percdamp=0.01,
+                    ordering=getattr(args, "elastic_ordering", "wanda"),
+                )
                 pruner.free()
             plan_store.put_layer(layer_index, plans)
 
