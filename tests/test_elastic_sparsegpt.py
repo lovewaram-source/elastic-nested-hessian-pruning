@@ -102,5 +102,51 @@ class MaskPlanningTests(unittest.TestCase):
         self.assertEqual([int(mask.sum()) for mask in masks], [2, 4, 6])
 
 
+class ElasticCompensationTests(unittest.TestCase):
+    def test_compensation_is_finite_exact_and_restores_layout(self):
+        from torch import nn
+
+        from lib.elastic_sparsegpt import ElasticSparseGPT
+
+        layer = nn.Linear(4, 2, bias=False)
+        layer.weight.data.copy_(
+            torch.tensor(
+                [[4.0, 1.0, 3.0, 2.0], [8.0, 5.0, 7.0, 6.0]]
+            )
+        )
+        pruner = ElasticSparseGPT(layer)
+        pruner.H = torch.eye(4)
+
+        pruner.fasterprune(
+            sparsity=0.25,
+            reorder_blocks=2,
+            blocksize=2,
+            percdamp=0.01,
+        )
+
+        self.assertTrue(torch.isfinite(layer.weight).all())
+        self.assertEqual(int((layer.weight == 0).sum()), 2)
+        self.assertTrue(
+            torch.equal(
+                layer.weight,
+                torch.tensor(
+                    [[4.0, 0.0, 3.0, 0.0], [8.0, 5.0, 7.0, 6.0]]
+                ),
+            )
+        )
+
+    def test_rejects_more_groups_than_columns(self):
+        from torch import nn
+
+        from lib.elastic_sparsegpt import ElasticSparseGPT
+
+        layer = nn.Linear(3, 2, bias=False)
+        pruner = ElasticSparseGPT(layer)
+        pruner.H = torch.eye(3)
+
+        with self.assertRaisesRegex(ValueError, "cannot exceed"):
+            pruner.fasterprune(0.5, reorder_blocks=4)
+
+
 if __name__ == "__main__":
     unittest.main()
