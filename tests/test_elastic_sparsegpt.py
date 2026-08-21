@@ -1,5 +1,6 @@
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import torch
 
@@ -293,6 +294,155 @@ class ElasticCompensationTests(unittest.TestCase):
 
 
 class OrchestrationValidationTests(unittest.TestCase):
+    def test_multi_stage_orchestration_prepares_once(self):
+        from lib.prune import run_prepared_elastic_stages
+
+        calls = {"prepare": 0, "apply": []}
+        timings = []
+
+        def prepare():
+            calls["prepare"] += 1
+            return object()
+
+        def apply(store, previous, current):
+            calls["apply"].append((previous, current))
+
+        ticks = iter([0.0, 5.0, 5.0, 7.0, 7.0, 10.0, 10.0, 14.0])
+        run_prepared_elastic_stages(
+            [0.1, 0.2, 0.3],
+            prepare,
+            apply,
+            lambda store, previous, current, prep, stage, cumulative: timings.append(
+                (prep, stage, cumulative)
+            ),
+            clock=lambda: next(ticks),
+        )
+
+        self.assertEqual(
+            calls,
+            {
+                "prepare": 1,
+                "apply": [(0.0, 0.1), (0.1, 0.2), (0.2, 0.3)],
+            },
+        )
+        self.assertEqual(
+            timings,
+            [(5.0, 2.0, 7.0), (5.0, 3.0, 10.0), (5.0, 4.0, 14.0)],
+        )
+
+    def test_dense_preparation_does_not_modify_model_weights(self):
+        from torch import nn
+
+        from lib.elastic_plan_store import MemoryElasticPlanStore
+        from lib.prune import prepare_elastic_sparsegpt
+
+        class TinyBlock(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.proj = nn.Linear(4, 4, bias=False)
+
+            def forward(self, hidden, attention_mask=None, position_ids=None):
+                return (self.proj(hidden),)
+
+        class TinyModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.model = nn.Module()
+                self.model.layers = nn.ModuleList([TinyBlock()])
+                self.config = SimpleNamespace(use_cache=True, hidden_size=4)
+                self.seqlen = 2
+                self.hf_device_map = {}
+
+            def forward(self, token_ids):
+                hidden = torch.ones(
+                    (token_ids.shape[0], self.seqlen, 4),
+                    dtype=next(self.parameters()).dtype,
+                    device=token_ids.device,
+                )
+                attention_mask = torch.ones(
+                    (token_ids.shape[0], 1, self.seqlen, self.seqlen),
+                    device=token_ids.device,
+                )
+                position_ids = torch.arange(
+                    self.seqlen,
+                    device=token_ids.device,
+                ).unsqueeze(0)
+                return self.model.layers[0](
+                    hidden,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                )
+
+        model = TinyModel()
+        original = model.model.layers[0].proj.weight.detach().clone()
+        args = SimpleNamespace(nsamples=2, seed=0)
+        tokenizer = object()
+        dataloader = [
+            (torch.zeros((1, 2), dtype=torch.long),),
+            (torch.zeros((1, 2), dtype=torch.long),),
+        ]
+        store = MemoryElasticPlanStore()
+
+        with patch("lib.prune.get_loaders", return_value=(dataloader, None)):
+            prepare_elastic_sparsegpt(
+                args,
+                model,
+                tokenizer,
+                torch.device("cpu"),
+                store,
+            )
+
+        self.assertTrue(
+            torch.equal(model.model.layers[0].proj.weight, original)
+        )
+        self.assertIn("proj", store.get_layer(0))
+        self.assertTrue(model.config.use_cache)
+
+    def test_model_stage_uses_cached_plans_without_collecting_hessian(self):
+        from torch import nn
+
+        from lib.elastic_plan_store import MemoryElasticPlanStore
+        from lib.elastic_sparsegpt import ElasticSparseGPTPlan
+        from lib.prune import apply_elastic_sparsegpt_stage
+
+        class TinyBlock(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.proj = nn.Linear(8, 2, bias=False)
+
+        model = nn.Module()
+        model.model = nn.Module()
+        model.model.layers = nn.ModuleList([TinyBlock()])
+        model.hf_device_map = {}
+        model.model.layers[0].proj.weight.data.copy_(
+            torch.arange(1, 17, dtype=torch.float32).reshape(2, 8)
+        )
+
+        store = MemoryElasticPlanStore()
+        store.put_layer(
+            0,
+            {
+                "proj": ElasticSparseGPTPlan(
+                    permutation=torch.arange(8),
+                    hessian_factor=torch.eye(8),
+                    dead_columns=torch.zeros(8, dtype=torch.bool),
+                )
+            },
+        )
+
+        apply_elastic_sparsegpt_stage(
+            model,
+            torch.device("cpu"),
+            store,
+            sparsity=0.10,
+            previous_sparsity=0.0,
+        )
+
+        self.assertEqual(
+            int((model.model.layers[0].proj.weight == 0).sum()),
+            2,
+        )
+
     def test_accepts_only_strictly_increasing_elastic_stages(self):
         from lib.prune import validate_elastic_sparsegpt_stages
 

@@ -3,7 +3,11 @@ import heapq
 import torch 
 import torch.nn as nn 
 from .sparsegpt import SparseGPT 
-from .elastic_sparsegpt import ElasticSparseGPT
+from .elastic_sparsegpt import (
+    ElasticSparseGPT,
+    apply_elastic_sparsegpt_stage as apply_elastic_layer_stage,
+)
+from .elastic_plan_store import MemoryElasticPlanStore
 from .layerwrapper import WrappedGPT
 from .data import get_loaders 
 
@@ -316,26 +320,38 @@ def validate_elastic_sparsegpt_args(args, prune_n=0, prune_m=0):
         raise ValueError("elastic_sparsegpt supports unstructured sparsity only")
 
 
-@torch.no_grad()
-def prune_elastic_sparsegpt(
-    args,
-    model,
-    tokenizer,
-    dev,
-    prune_n=0,
-    prune_m=0,
-    sparsity=None,
-    previous_sparsity=0.0,
-    permutations=None,
+def run_prepared_elastic_stages(
+    stages,
+    prepare,
+    apply,
+    on_stage,
+    clock=time.perf_counter,
 ):
-    sparsity = args.sparsity_ratio if sparsity is None else sparsity
-    validate_elastic_sparsegpt_stages([sparsity])
-    if prune_n != 0 or prune_m != 0:
-        raise ValueError("elastic_sparsegpt supports unstructured sparsity only")
-    if not 0.0 <= previous_sparsity < sparsity:
-        raise ValueError("previous_sparsity must be smaller than sparsity")
-    permutations = {} if permutations is None else permutations
-    print('Starting elastic SparseGPT ...')
+    preparation_start = clock()
+    prepared = prepare()
+    preparation_seconds = clock() - preparation_start
+    cumulative_seconds = preparation_seconds
+    previous = 0.0
+    for current in validate_elastic_sparsegpt_stages(stages):
+        stage_start = clock()
+        apply(prepared, previous, current)
+        stage_seconds = clock() - stage_start
+        cumulative_seconds += stage_seconds
+        on_stage(
+            prepared,
+            previous,
+            current,
+            preparation_seconds,
+            stage_seconds,
+            cumulative_seconds,
+        )
+        previous = current
+    return prepared
+
+
+@torch.no_grad()
+def prepare_elastic_sparsegpt(args, model, tokenizer, dev, plan_store):
+    print('Preparing shared elastic SparseGPT plans ...')
     dataloader, _ = get_loaders(
         "c4",
         nsamples=args.nsamples,
@@ -371,81 +387,144 @@ def prune_elastic_sparsegpt(
             cache['position_ids'] = kwargs['position_ids']
             raise ValueError
 
-    layers[0] = Catcher(layers[0])
-    for batch in dataloader:
-        try:
-            model(batch[0].to(dev))
-        except ValueError:
-            pass
-    layers[0] = layers[0].module
+    original_first_layer = layers[0]
+    layers[0] = Catcher(original_first_layer)
+    try:
+        for batch in dataloader:
+            try:
+                model(batch[0].to(dev))
+            except ValueError:
+                pass
+    finally:
+        layers[0] = original_first_layer
     torch.cuda.empty_cache()
 
     outs = torch.zeros_like(inps)
     attention_mask = cache['attention_mask']
     position_ids = cache['position_ids']
 
-    print('Elastic SparseGPT calibration ready.')
+    try:
+        for layer_index, layer in enumerate(layers):
+            if f"model.layers.{layer_index}" in model.hf_device_map:
+                dev = model.hf_device_map[f"model.layers.{layer_index}"]
+                print(f"layer {layer_index} device {dev}")
+                inps = inps.to(dev)
+                outs = outs.to(dev)
+                attention_mask = attention_mask.to(dev)
+                position_ids = position_ids.to(dev)
 
+            subset = find_layers(layer)
+            pruners = {
+                name: ElasticSparseGPT(subset[name])
+                for name in subset
+            }
+
+            def add_batch(name):
+                def hook(_, inp, out):
+                    pruners[name].add_batch(inp[0].data, out.data)
+                return hook
+
+            handles = [
+                subset[name].register_forward_hook(add_batch(name))
+                for name in pruners
+            ]
+            try:
+                for sample_index in range(args.nsamples):
+                    outs[sample_index] = layer(
+                        inps[sample_index].unsqueeze(0),
+                        attention_mask=attention_mask,
+                        position_ids=position_ids,
+                    )[0]
+            finally:
+                for handle in handles:
+                    handle.remove()
+
+            plans = {}
+            for name, pruner in pruners.items():
+                print(f"preparing elastic plan layer {layer_index} name {name}")
+                plans[name] = pruner.prepare_plan(percdamp=0.01)
+                pruner.free()
+            plan_store.put_layer(layer_index, plans)
+
+            layers[layer_index] = layer
+            torch.cuda.empty_cache()
+            inps, outs = outs, inps
+    finally:
+        model.config.use_cache = use_cache
+        torch.cuda.empty_cache()
+
+
+@torch.no_grad()
+def apply_elastic_sparsegpt_stage(
+    model,
+    dev,
+    plan_store,
+    sparsity,
+    previous_sparsity=0.0,
+):
+    validate_elastic_sparsegpt_stages([sparsity])
+    if not 0.0 <= previous_sparsity < sparsity:
+        raise ValueError("previous_sparsity must be smaller than sparsity")
+
+    layers = model.model.layers
     for layer_index, layer in enumerate(layers):
         if f"model.layers.{layer_index}" in model.hf_device_map:
             dev = model.hf_device_map[f"model.layers.{layer_index}"]
-            print(f"layer {layer_index} device {dev}")
-            inps = inps.to(dev)
-            outs = outs.to(dev)
-            attention_mask = attention_mask.to(dev)
-            position_ids = position_ids.to(dev)
-
         subset = find_layers(layer)
-        pruners = {
-            name: ElasticSparseGPT(subset[name])
-            for name in subset
-        }
-
-        def add_batch(name):
-            def hook(_, inp, out):
-                pruners[name].add_batch(inp[0].data, out.data)
-            return hook
-
-        handles = [
-            subset[name].register_forward_hook(add_batch(name))
-            for name in pruners
-        ]
-        for sample_index in range(args.nsamples):
-            outs[sample_index] = layer(
-                inps[sample_index].unsqueeze(0),
-                attention_mask=attention_mask,
-                position_ids=position_ids,
-            )[0]
-        for handle in handles:
-            handle.remove()
-
-        for name, pruner in pruners.items():
-            print(layer_index, name)
-            print('Elastic pruning ...')
-            key = (layer_index, name)
-            permutations[key] = pruner.fasterprune(
+        plans = plan_store.get_layer(layer_index)
+        if set(plans) != set(subset):
+            raise ValueError(
+                f"elastic plan modules do not match layer {layer_index}"
+            )
+        for name, target_layer in subset.items():
+            print(f"elastic stage layer {layer_index} name {name}")
+            apply_elastic_layer_stage(
+                target_layer,
+                plans[name],
                 sparsity,
                 previous_sparsity=previous_sparsity,
-                permutation=permutations.get(key),
-                percdamp=0.01,
                 blocksize=128,
             )
-            pruner.free()
-
-        for sample_index in range(args.nsamples):
-            outs[sample_index] = layer(
-                inps[sample_index].unsqueeze(0),
-                attention_mask=attention_mask,
-                position_ids=position_ids,
-            )[0]
-
-        layers[layer_index] = layer
+        del plans
         torch.cuda.empty_cache()
-        inps, outs = outs, inps
 
-    model.config.use_cache = use_cache
-    torch.cuda.empty_cache()
-    return permutations
+
+@torch.no_grad()
+def prune_elastic_sparsegpt(
+    args,
+    model,
+    tokenizer,
+    dev,
+    prune_n=0,
+    prune_m=0,
+    sparsity=None,
+    previous_sparsity=0.0,
+    permutations=None,
+):
+    sparsity = args.sparsity_ratio if sparsity is None else sparsity
+    validate_elastic_sparsegpt_stages([sparsity])
+    if prune_n != 0 or prune_m != 0:
+        raise ValueError("elastic_sparsegpt supports unstructured sparsity only")
+
+    store = MemoryElasticPlanStore()
+    success = False
+    try:
+        prepare_elastic_sparsegpt(args, model, tokenizer, dev, store)
+        apply_elastic_sparsegpt_stage(
+            model,
+            dev,
+            store,
+            sparsity,
+            previous_sparsity=previous_sparsity,
+        )
+        permutations = {}
+        for layer_index in range(len(model.model.layers)):
+            for name, plan in store.get_layer(layer_index).items():
+                permutations[(layer_index, name)] = plan.permutation
+        success = True
+        return permutations
+    finally:
+        store.close(success=success)
 
 
 
