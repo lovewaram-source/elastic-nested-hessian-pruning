@@ -5,7 +5,15 @@ import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from importlib.metadata import version
 
-from lib.prune import prune_wanda, prune_magnitude, prune_sparsegpt, prune_ablate, check_sparsity, find_layers
+from lib.prune import (
+    check_sparsity,
+    find_layers,
+    prune_ablate,
+    prune_elastic_sparsegpt,
+    prune_magnitude,
+    prune_sparsegpt,
+    prune_wanda,
+)
 from lib.eval import eval_ppl, eval_zero_shot
 
 print('torch', version('torch'))
@@ -25,22 +33,32 @@ def get_llm(model_name, cache_dir="llm_weights"):
     model.seqlen = model.config.max_position_embeddings 
     return model
 
-def main():
+def build_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument('--model', type=str, help='LLaMA model')
     parser.add_argument('--seed', type=int, default=0, help='Seed for sampling the calibration data.')
     parser.add_argument('--nsamples', type=int, default=128, help='Number of calibration samples.')
     parser.add_argument('--sparsity_ratio', type=float, default=0, help='Sparsity level')
     parser.add_argument("--sparsity_type", type=str, choices=["unstructured", "4:8", "2:4"])
-    parser.add_argument("--prune_method", type=str, choices=["magnitude", "wanda", "sparsegpt", 
+    parser.add_argument("--prune_method", type=str, choices=["magnitude", "wanda", "sparsegpt", "elastic_sparsegpt",
                         "ablate_mag_seq", "ablate_wanda_seq", "ablate_mag_iter", "ablate_wanda_iter", "search"])
+    parser.add_argument(
+        "--reorder_blocks",
+        type=int,
+        default=5,
+        help="Number of ordered column-allocation groups for elastic_sparsegpt.",
+    )
     parser.add_argument("--cache_dir", default="llm_weights", type=str )
     parser.add_argument('--use_variant', action="store_true", help="whether to use the wanda variant described in the appendix")
     parser.add_argument('--save', type=str, default=None, help='Path to save results.')
     parser.add_argument('--save_model', type=str, default=None, help='Path to save the pruned model.')
 
     parser.add_argument("--eval_zero_shot", action="store_true")
-    args = parser.parse_args()
+    return parser
+
+
+def main():
+    args = build_parser().parse_args()
 
     # Setting seeds for reproducibility
     np.random.seed(args.seed)
@@ -71,6 +89,15 @@ def main():
             prune_magnitude(args, model, tokenizer, device, prune_n=prune_n, prune_m=prune_m)
         elif args.prune_method == "sparsegpt":
             prune_sparsegpt(args, model, tokenizer, device, prune_n=prune_n, prune_m=prune_m)
+        elif args.prune_method == "elastic_sparsegpt":
+            prune_elastic_sparsegpt(
+                args,
+                model,
+                tokenizer,
+                device,
+                prune_n=prune_n,
+                prune_m=prune_m,
+            )
         elif "ablate" in args.prune_method:
             prune_ablate(args, model, tokenizer, device, prune_n=prune_n, prune_m=prune_m)
 

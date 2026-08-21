@@ -174,5 +174,24 @@ class OrchestrationValidationTests(unittest.TestCase):
             validate_elastic_sparsegpt_args(args, prune_n=0, prune_m=0)
 
 
+class CliExposureTests(unittest.TestCase):
+    def test_parser_accepts_elastic_method_and_ten_groups(self):
+        from main import build_parser
+
+        args = build_parser().parse_args(
+            [
+                "--prune_method",
+                "elastic_sparsegpt",
+                "--sparsity_type",
+                "unstructured",
+                "--reorder_blocks",
+                "10",
+            ]
+        )
+
+        self.assertEqual(args.prune_method, "elastic_sparsegpt")
+        self.assertEqual(args.reorder_blocks, 10)
+
+
 if __name__ == "__main__":
     unittest.main()
