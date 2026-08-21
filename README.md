@@ -57,7 +57,11 @@ We provide a quick overview of the arguments:
 
 ### Elastic Reordered SparseGPT experiment
 
-The experimental `elastic_sparsegpt` method ranks all input columns once per linear layer by the predicted SparseGPT loss of pruning the lowest-scored 80% of weights in that column. For a target sparsity `p` in `[0.1, 0.8]`, it activates only the reordered prefix `p / 0.8` of columns and dynamically applies an 80% SparseGPT mask inside each 128-column compensation segment. Masks are never generated for the whole layer in advance: every segment is scored after preceding compensation has updated its weights. Passing `--elastic_sparsities` advances one model through an increasing sequence of stages and writes a checkpoint result for every stage.
+The experimental `elastic_sparsegpt` method prepares each linear layer once from the same dense-reference calibration pass. Preparation computes one Hessian/Cholesky factor and one global input-column permutation per linear layer. Columns are ranked by the predicted SparseGPT loss of pruning the lowest-scored 80% of weights in that column.
+
+For a target sparsity `p` in `[0.1, 0.8]`, the method activates the reordered prefix `p / 0.8` and applies an 80% SparseGPT mask inside each 128-column compensation segment. The stages form one continuous path: 10% starts from the dense model, 20% freezes the 10% prefix and prunes only the next interval, 30% continues from 20%, and so on. Compensation flows only into columns to the right, so masks are strictly nested.
+
+The prepared factors can be kept in CPU memory (faster) or stored as one file per transformer layer on disk (lower peak CPU memory). Preparation is shared by all requested stages; it is not repeated eight times.
 
 Use identical model, calibration sample, seed, and sparsity settings for the baseline and experimental runs:
 
@@ -76,12 +80,30 @@ python main.py \
   --prune_method elastic_sparsegpt \
   --sparsity_type unstructured \
   --elastic_sparsities 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 \
+  --elastic_cache_mode memory \
   --nsamples 128 \
   --seed 0 \
   --save results/elastic-prefix
 ```
 
-For example, 20% global sparsity activates the first 25% of reordered columns and prunes 80% of weights in that prefix; 30% keeps the 20% mask, activates the next 12.5% of columns, and prunes 80% only in that new region. This produces nested masks while avoiding full-column or full-group deletion. The command above writes `results/elastic-prefix/s01` through `s08`.
+If the factors do not fit in CPU memory, use disk-backed caching:
+
+```sh
+python main.py \
+  --model <MODEL_PATH> \
+  --prune_method elastic_sparsegpt \
+  --sparsity_type unstructured \
+  --elastic_sparsities 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 \
+  --elastic_cache_mode disk \
+  --elastic_cache_dir /data/elastic_sparsegpt_cache \
+  --nsamples 128 \
+  --seed 0 \
+  --save results/elastic-prefix-disk
+```
+
+For example, 20% global sparsity activates the first 25% of reordered columns and prunes 80% of weights in that prefix; 30% keeps the 20% mask, activates the next 12.5% of columns, and prunes 80% only in that new region. This avoids full-column or full-group deletion. The commands above write `s01` through `s08` below the selected result directory.
+
+Each stage log separates `preparation_time_seconds`, `stage_pruning_time_seconds`, and `cumulative_pruning_time_seconds`. Preparation covers the single dense calibration/Hessian/permutation pass. Stage time covers only the newly activated interval, while cumulative time is preparation plus all pruning stages reached so far. WikiText perplexity is still evaluated separately at all eight sparsities and is not included in pruning time. Adding `--save_model <DIR>` writes eight full checkpoints (`s01` through `s08`), which can require substantial disk space.
 
 For structured N:M sparsity, set the argument `--sparsity_type` to "2:4" or "4:8". An illustrative command is provided below:
 ```sh
