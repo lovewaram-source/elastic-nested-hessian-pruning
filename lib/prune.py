@@ -570,7 +570,7 @@ def apply_elastic_sparsegpt_stage(
         for name, target_layer in subset.items():
             print(f"elastic stage layer {layer_index} name {name}")
             if dynamic_wanda:
-                apply_dynamic_wanda_sparsegpt_stage(
+                plans[name] = apply_dynamic_wanda_sparsegpt_stage(
                     target_layer,
                     plans[name],
                     sparsity,
@@ -584,6 +584,8 @@ def apply_elastic_sparsegpt_stage(
                     previous_sparsity=previous_sparsity,
                     blocksize=128,
                 )
+        if dynamic_wanda:
+            plan_store.replace_layer(layer_index, plans)
         del plans
         torch.cuda.empty_cache()
 
