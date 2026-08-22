@@ -66,6 +66,11 @@ def build_parser():
         default=None,
         help='Base directory for temporary disk-backed elastic plans.',
     )
+    parser.add_argument(
+        '--elastic_profile_preparation',
+        action='store_true',
+        help='Print a synchronized breakdown of elastic preparation time.',
+    )
     parser.add_argument("--sparsity_type", type=str, choices=["unstructured", "4:8", "2:4"])
     parser.add_argument("--prune_method", type=str, choices=["magnitude", "wanda", "sparsegpt", "elastic_sparsegpt", "elastic_wanda_sparsegpt",
                         "ablate_mag_seq", "ablate_wanda_seq", "ablate_mag_iter", "ablate_wanda_iter", "search"])

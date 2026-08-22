@@ -7,6 +7,7 @@ compensation block and contributes the next global checkpoint from 20% to 80%.
 """
 
 from dataclasses import dataclass
+import time
 
 import torch
 import torch.nn as nn
@@ -41,7 +42,7 @@ def iter_stage_segments(
 ) -> list[tuple[int, int]]:
     """Return the fixed elastic slices opened between two checkpoints.
 
-    The seven slices end at global sparsities 20%, 30%, ..., 80%.  Because
+    The seven slices end at global sparsities 20%, 30%, ..., 80%. Because
     every slice itself is one SparseGPT compensation block, ``blocksize`` is
     retained only for API compatibility and never subdivides a slice.
     """
@@ -281,8 +282,23 @@ class ElasticSparseGPT(SparseGPT):
         percdamp: float = 0.01,
         permutation: torch.Tensor | None = None,
         ordering: str = "sparsegpt",
+        timings: dict[str, float] | None = None,
     ) -> ElasticSparseGPTPlan:
         """Consume the collected Hessian and return a reusable CPU plan."""
+        def start_timing():
+            if timings is not None and self.dev.type == "cuda":
+                torch.cuda.synchronize(self.dev)
+            return time.perf_counter()
+
+        def finish_timing(name: str, start: float) -> None:
+            if timings is None:
+                return
+            if self.dev.type == "cuda":
+                torch.cuda.synchronize(self.dev)
+            timings[name] = timings.get(name, 0.0) + (
+                time.perf_counter() - start
+            )
+
         weight = _weight_matrix(self.layer)
         hessian = self.H
         self.H = None
@@ -298,33 +314,44 @@ class ElasticSparseGPT(SparseGPT):
         diagonal_indices = torch.arange(self.columns, device=self.dev)
         hessian[diagonal_indices, diagonal_indices] += damp
 
+        factorization_start = start_timing()
         hessian_inverse = torch.cholesky_inverse(
             torch.linalg.cholesky(hessian)
         )
-        original_factor = torch.linalg.cholesky(
-            hessian_inverse,
-            upper=True,
-        )
+        original_factor = None
+        if permutation is None and ordering == "sparsegpt":
+            original_factor = torch.linalg.cholesky(
+                hessian_inverse,
+                upper=True,
+            )
+        finish_timing("hessian_factorization_seconds", factorization_start)
         if permutation is None:
+            ordering_start = start_timing()
             permutation = column_permutation(
                 weight,
-                original_factor,
+                hessian_factor=original_factor,
                 ordering=ordering,
                 activation_norms=activation_norms,
             )
+            finish_timing("column_ordering_seconds", ordering_start)
         else:
             permutation = permutation.to(self.dev)
+            if timings is not None:
+                timings.setdefault("column_ordering_seconds", 0.0)
 
+        reordered_factor_start = start_timing()
         permuted_inverse = hessian_inverse[permutation][:, permutation]
         hessian_factor = torch.linalg.cholesky(
             permuted_inverse,
             upper=True,
         )
-        return ElasticSparseGPTPlan(
+        plan = ElasticSparseGPTPlan(
             permutation=permutation,
             hessian_factor=hessian_factor,
             dead_columns=dead_columns,
         ).cpu()
+        finish_timing("reordered_factor_seconds", reordered_factor_start)
+        return plan
 
     def fasterprune(
         self,

@@ -33,6 +33,7 @@ def elastic_ordering_for_method(method):
             f"unknown elastic SparseGPT method: {method}"
         ) from error
 
+
 def find_layers(module, layers=[nn.Linear], name=''):
     """
     Recursively find the layers of a certain type in a module.
@@ -385,7 +386,26 @@ def run_prepared_elastic_stages(
 
 @torch.no_grad()
 def prepare_elastic_sparsegpt(args, model, tokenizer, dev, plan_store):
-    print('Preparing shared elastic SparseGPT plans ...')
+    print('Preparing elastic SparseGPT plans ...')
+    timings = (
+        {} if getattr(args, "elastic_profile_preparation", False) else None
+    )
+
+    def start_timing():
+        if timings is not None and torch.cuda.is_available():
+            torch.cuda.synchronize()
+        return time.perf_counter()
+
+    def finish_timing(name, start):
+        if timings is None:
+            return
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        timings[name] = timings.get(name, 0.0) + (
+            time.perf_counter() - start
+        )
+
+    loader_start = start_timing()
     dataloader, _ = get_loaders(
         "c4",
         nsamples=args.nsamples,
@@ -393,6 +413,7 @@ def prepare_elastic_sparsegpt(args, model, tokenizer, dev, plan_store):
         seqlen=model.seqlen,
         tokenizer=tokenizer,
     )
+    finish_timing("data_loading_seconds", loader_start)
 
     use_cache = model.config.use_cache
     model.config.use_cache = False
@@ -423,6 +444,7 @@ def prepare_elastic_sparsegpt(args, model, tokenizer, dev, plan_store):
 
     original_first_layer = layers[0]
     layers[0] = Catcher(original_first_layer)
+    capture_start = start_timing()
     try:
         for batch in dataloader:
             try:
@@ -431,6 +453,7 @@ def prepare_elastic_sparsegpt(args, model, tokenizer, dev, plan_store):
                 pass
     finally:
         layers[0] = original_first_layer
+    finish_timing("calibration_forward_seconds", capture_start)
     torch.cuda.empty_cache()
 
     outs = torch.zeros_like(inps)
@@ -462,6 +485,7 @@ def prepare_elastic_sparsegpt(args, model, tokenizer, dev, plan_store):
                 subset[name].register_forward_hook(add_batch(name))
                 for name in pruners
             ]
+            layer_forward_start = start_timing()
             try:
                 for sample_index in range(args.nsamples):
                     outs[sample_index] = layer(
@@ -472,16 +496,24 @@ def prepare_elastic_sparsegpt(args, model, tokenizer, dev, plan_store):
             finally:
                 for handle in handles:
                     handle.remove()
+            finish_timing(
+                "calibration_forward_seconds",
+                layer_forward_start,
+            )
 
             plans = {}
+            ordering = elastic_ordering_for_method(args.prune_method)
             for name, pruner in pruners.items():
                 print(f"preparing elastic plan layer {layer_index} name {name}")
                 plans[name] = pruner.prepare_plan(
                     percdamp=0.01,
-                    ordering=elastic_ordering_for_method(args.prune_method),
+                    ordering=ordering,
+                    timings=timings,
                 )
                 pruner.free()
+            cache_write_start = start_timing()
             plan_store.put_layer(layer_index, plans)
+            finish_timing("plan_cache_write_seconds", cache_write_start)
 
             layers[layer_index] = layer
             torch.cuda.empty_cache()
@@ -489,6 +521,17 @@ def prepare_elastic_sparsegpt(args, model, tokenizer, dev, plan_store):
     finally:
         model.config.use_cache = use_cache
         torch.cuda.empty_cache()
+    if timings is not None:
+        print("elastic preparation breakdown (seconds)")
+        for name in (
+            "data_loading_seconds",
+            "calibration_forward_seconds",
+            "hessian_factorization_seconds",
+            "column_ordering_seconds",
+            "reordered_factor_seconds",
+            "plan_cache_write_seconds",
+        ):
+            print(f"{name} {timings.get(name, 0.0):.2f}")
 
 
 @torch.no_grad()
