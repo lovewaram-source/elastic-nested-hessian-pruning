@@ -13,7 +13,7 @@ class PrefixStageTests(unittest.TestCase):
         self.assertEqual(prefix_column_count(columns=4096, sparsity=0.30), 1536)
         self.assertEqual(prefix_column_count(columns=4096, sparsity=0.80), 4096)
 
-    def test_full_schedule_is_exactly_seven_compensation_blocks(self):
+    def test_full_schedule_is_exactly_seven_outer_slices(self):
         from lib.elastic_sparsegpt import iter_stage_segments
 
         segments = iter_stage_segments(
@@ -36,7 +36,7 @@ class PrefixStageTests(unittest.TestCase):
             ],
         )
 
-    def test_second_stage_is_one_whole_compensation_block(self):
+    def test_second_stage_is_one_whole_outer_slice(self):
         from lib.elastic_sparsegpt import iter_stage_segments
 
         self.assertEqual(
@@ -48,7 +48,6 @@ class PrefixStageTests(unittest.TestCase):
             ),
             [(1024, 1536)],
         )
-
 
 class MaskPlanningTests(unittest.TestCase):
     def test_block_mask_prunes_an_exact_stable_eighty_percent_prefix(self):
@@ -160,6 +159,77 @@ class MaskPlanningTests(unittest.TestCase):
         self.assertTrue(torch.equal(restored, weight))
 
 class ElasticCompensationTests(unittest.TestCase):
+    def test_plan_preparation_reports_factorization_and_ordering_time(self):
+        from torch import nn
+
+        from lib.elastic_sparsegpt import ElasticSparseGPT
+
+        collector = ElasticSparseGPT(nn.Linear(4, 2, bias=False))
+        collector.H = torch.eye(4)
+        timings = {}
+
+        collector.prepare_plan(
+            percdamp=0.01,
+            ordering="wanda",
+            timings=timings,
+        )
+
+        self.assertIn("hessian_factorization_seconds", timings)
+        self.assertIn("column_ordering_seconds", timings)
+        self.assertIn("reordered_factor_seconds", timings)
+        self.assertTrue(all(value >= 0.0 for value in timings.values()))
+
+    def test_one_outer_slice_uses_one_global_mask_even_with_small_blocksize(self):
+        from torch import nn
+
+        from lib.elastic_sparsegpt import (
+            ElasticSparseGPTPlan,
+            apply_elastic_sparsegpt_stage,
+        )
+
+        layer = nn.Linear(16, 2, bias=False)
+        layer.weight.data.copy_(
+            torch.tensor(
+                [
+                    [1.0, 1.0, 10.0, 10.0] + [100.0] * 12,
+                    [1.0, 1.0, 10.0, 10.0] + [100.0] * 12,
+                ]
+            )
+        )
+        plan = ElasticSparseGPTPlan(
+            permutation=torch.arange(16),
+            hessian_factor=torch.eye(16),
+            dead_columns=torch.zeros(16, dtype=torch.bool),
+        )
+
+        apply_elastic_sparsegpt_stage(
+            layer,
+            plan,
+            sparsity=0.20,
+            previous_sparsity=0.0,
+            blocksize=2,
+        )
+
+        self.assertEqual(int((layer.weight[:, :2] == 0).sum()), 4)
+
+    def test_wanda_plan_does_not_build_an_unused_original_factor(self):
+        from torch import nn
+
+        from lib.elastic_sparsegpt import ElasticSparseGPT, column_permutation
+
+        layer = nn.Linear(8, 2, bias=False)
+        collector = ElasticSparseGPT(layer)
+        collector.H = torch.eye(8)
+
+        with patch(
+            "lib.elastic_sparsegpt.column_permutation",
+            wraps=column_permutation,
+        ) as permutation:
+            collector.prepare_plan(percdamp=0.01, ordering="wanda")
+
+        self.assertEqual(len(permutation.call_args.args), 1)
+        self.assertIsNone(permutation.call_args.kwargs.get("hessian_factor"))
+
     def test_prepared_plan_can_apply_two_nested_stages_without_a_new_hessian(self):
         from torch import nn
 
@@ -356,6 +426,117 @@ class ElasticCompensationTests(unittest.TestCase):
 
 
 class OrchestrationValidationTests(unittest.TestCase):
+    def test_preparation_matches_sparsegpt_with_one_hessian_per_module(self):
+        from torch import nn
+
+        from lib.elastic_plan_store import MemoryElasticPlanStore
+        from lib.prune import prepare_elastic_sparsegpt
+
+        class TinyAttention(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.q_proj = nn.Linear(4, 4, bias=False)
+                self.k_proj = nn.Linear(4, 4, bias=False)
+                self.v_proj = nn.Linear(4, 4, bias=False)
+                self.o_proj = nn.Linear(4, 4, bias=False)
+
+            def forward(self, hidden):
+                mixed = (
+                    self.q_proj(hidden)
+                    + self.k_proj(hidden)
+                    + self.v_proj(hidden)
+                )
+                return self.o_proj(mixed)
+
+        class TinyMlp(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.gate_proj = nn.Linear(4, 4, bias=False)
+                self.up_proj = nn.Linear(4, 4, bias=False)
+                self.down_proj = nn.Linear(4, 4, bias=False)
+
+            def forward(self, hidden):
+                return self.down_proj(
+                    self.gate_proj(hidden) + self.up_proj(hidden)
+                )
+
+        class TinyBlock(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.self_attn = TinyAttention()
+                self.mlp = TinyMlp()
+
+            def forward(self, hidden, attention_mask=None, position_ids=None):
+                return (self.mlp(self.self_attn(hidden)),)
+
+        class TinyModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.model = nn.Module()
+                self.model.layers = nn.ModuleList([TinyBlock()])
+                self.config = SimpleNamespace(use_cache=True, hidden_size=4)
+                self.seqlen = 2
+                self.hf_device_map = {}
+
+            def forward(self, token_ids):
+                hidden = torch.ones(
+                    (token_ids.shape[0], self.seqlen, 4),
+                    dtype=next(self.parameters()).dtype,
+                    device=token_ids.device,
+                )
+                attention_mask = torch.ones(
+                    (token_ids.shape[0], 1, self.seqlen, self.seqlen),
+                    device=token_ids.device,
+                )
+                position_ids = torch.arange(
+                    self.seqlen,
+                    device=token_ids.device,
+                ).unsqueeze(0)
+                return self.model.layers[0](
+                    hidden,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                )
+
+        model = TinyModel()
+        args = SimpleNamespace(
+            nsamples=2,
+            seed=0,
+            prune_method="elastic_wanda_sparsegpt",
+        )
+        dataloader = [
+            (torch.zeros((1, 2), dtype=torch.long),),
+            (torch.zeros((1, 2), dtype=torch.long),),
+        ]
+        store = MemoryElasticPlanStore()
+
+        with patch("lib.prune.get_loaders", return_value=(dataloader, None)):
+            with patch(
+                "lib.elastic_sparsegpt.torch.cholesky_inverse",
+                wraps=torch.cholesky_inverse,
+            ) as inverse:
+                prepare_elastic_sparsegpt(
+                    args,
+                    model,
+                    object(),
+                    torch.device("cpu"),
+                    store,
+                )
+
+        self.assertEqual(inverse.call_count, 7)
+        self.assertEqual(
+            set(store.get_layer(0)),
+            {
+                "self_attn.q_proj",
+                "self_attn.k_proj",
+                "self_attn.v_proj",
+                "self_attn.o_proj",
+                "mlp.gate_proj",
+                "mlp.up_proj",
+                "mlp.down_proj",
+            },
+        )
+
     def test_orchestration_synchronizes_before_and_after_each_timed_region(self):
         from lib.prune import run_prepared_elastic_stages
 
@@ -614,6 +795,19 @@ class CliExposureTests(unittest.TestCase):
 
         self.assertEqual(args.elastic_cache_mode, "disk")
         self.assertEqual(args.elastic_cache_dir, "/tmp/elastic-cache")
+
+    def test_parser_accepts_elastic_preparation_profile(self):
+        from main import build_parser
+
+        args = build_parser().parse_args(
+            [
+                "--prune_method",
+                "elastic_wanda_sparsegpt",
+                "--elastic_profile_preparation",
+            ]
+        )
+
+        self.assertTrue(args.elastic_profile_preparation)
 
     def test_parser_defaults_to_memory_elastic_cache(self):
         from main import build_parser
