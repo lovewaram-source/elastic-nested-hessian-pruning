@@ -166,12 +166,13 @@ def main():
             with open(save_filepath, "w") as f:
                 f.write(
                     format_elastic_result_log(
-                        args.prune_method,
-                        actual_sparsity,
-                        ppl_test,
-                        preparation_time_seconds,
-                        stage_pruning_time_seconds,
-                        cumulative_pruning_time_seconds,
+                        model_name=model_name,
+                        method=args.prune_method,
+                        sparsity_ratio=actual_sparsity,
+                        perplexity=ppl_test,
+                        preparation_time_seconds=preparation_time_seconds,
+                        stage_pruning_time_seconds=stage_pruning_time_seconds,
+                        cumulative_pruning_time_seconds=cumulative_pruning_time_seconds,
                     )
                 )
 
@@ -233,7 +234,15 @@ def main():
         os.makedirs(args.save)
     save_filepath = os.path.join(args.save, f"log_{args.prune_method}.txt")
     with open(save_filepath, "w") as f:
-        f.write(format_result_log(args.prune_method, sparsity_ratio, ppl_test, pruning_time_seconds))
+        f.write(
+            format_result_log(
+                model_name=model_name,
+                method=args.prune_method,
+                sparsity_ratio=sparsity_ratio,
+                perplexity=ppl_test,
+                pruning_time_seconds=pruning_time_seconds,
+            )
+        )
 
     if args.eval_zero_shot:
         accelerate=False
