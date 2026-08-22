@@ -52,7 +52,7 @@ def build_parser():
         type=float,
         nargs='+',
         default=None,
-        help='Increasing elastic_sparsegpt checkpoint sparsities, e.g. 0.1 0.2 ... 0.8.',
+        help='Increasing elastic_sparsegpt checkpoints chosen from 0.2 0.3 ... 0.8.',
     )
     parser.add_argument(
         '--elastic_cache_mode',
@@ -191,6 +191,7 @@ def main():
                 prepare,
                 apply,
                 on_stage,
+                synchronize=torch.cuda.synchronize,
             )
             success = True
         finally:

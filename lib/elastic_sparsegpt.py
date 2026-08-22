@@ -1,9 +1,9 @@
-"""Prefix-stage, reordered SparseGPT pruning.
+"""Seven-slice, reordered SparseGPT pruning.
 
 Columns are ranked once per linear layer, then processed left-to-right in
-that reordered coordinate system. A target global sparsity ``p`` activates
-only the first ``p / 0.8`` of columns; every activated compensation segment
-selects an approximately 80% SparseGPT mask from its current weights.
+that reordered coordinate system. The first slice contains 25% of columns and
+the remaining six contain 12.5% each. Every slice is one complete SparseGPT
+compensation block and contributes the next global checkpoint from 20% to 80%.
 """
 
 from dataclasses import dataclass
@@ -16,6 +16,7 @@ from .sparsegpt import SparseGPT
 
 
 MAX_SPARSITY = 0.8
+ELASTIC_SPARSITY_STAGES = (0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8)
 
 
 def prefix_column_count(
@@ -31,22 +32,6 @@ def prefix_column_count(
     return round(columns * sparsity / max_sparsity)
 
 
-def iter_prefix_segments(
-    columns: int,
-    sparsity: float,
-    blocksize: int,
-    max_sparsity: float = MAX_SPARSITY,
-) -> list[tuple[int, int]]:
-    """Split the active prefix into compensation segments of at most blocksize."""
-    if blocksize < 1:
-        raise ValueError("blocksize must be positive")
-    prefix = prefix_column_count(columns, sparsity, max_sparsity)
-    return [
-        (start, min(start + blocksize, prefix))
-        for start in range(0, prefix, blocksize)
-    ]
-
-
 def iter_stage_segments(
     columns: int,
     previous_sparsity: float,
@@ -54,17 +39,37 @@ def iter_stage_segments(
     blocksize: int,
     max_sparsity: float = MAX_SPARSITY,
 ) -> list[tuple[int, int]]:
-    """Split only the newly activated prefix interval into compensation segments."""
+    """Return the fixed elastic slices opened between two checkpoints.
+
+    The seven slices end at global sparsities 20%, 30%, ..., 80%.  Because
+    every slice itself is one SparseGPT compensation block, ``blocksize`` is
+    retained only for API compatibility and never subdivides a slice.
+    """
     if not 0.0 <= previous_sparsity < sparsity <= max_sparsity:
         raise ValueError("stage sparsities must satisfy 0 <= previous < current <= max")
     if blocksize < 1:
         raise ValueError("blocksize must be positive")
 
-    start = prefix_column_count(columns, previous_sparsity, max_sparsity)
-    end = prefix_column_count(columns, sparsity, max_sparsity)
+    checkpoints = (0.0,) + ELASTIC_SPARSITY_STAGES
+
+    def checkpoint_index(value: float) -> int:
+        for index, checkpoint in enumerate(checkpoints):
+            if abs(value - checkpoint) < 1e-8:
+                return index
+        raise ValueError(
+            "elastic stages must use 0.2, 0.3, ..., 0.8 "
+            "(previous may be 0.0)"
+        )
+
+    previous_index = checkpoint_index(previous_sparsity)
+    current_index = checkpoint_index(sparsity)
+    boundaries = [
+        prefix_column_count(columns, checkpoint, max_sparsity)
+        for checkpoint in checkpoints
+    ]
     return [
-        (segment_start, min(segment_start + blocksize, end))
-        for segment_start in range(start, end, blocksize)
+        (boundaries[index - 1], boundaries[index])
+        for index in range(previous_index + 1, current_index + 1)
     ]
 
 
@@ -106,7 +111,7 @@ def column_permutation(
     ordering: str = "sparsegpt",
     activation_norms: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Rank columns by their Bottom-80% SparseGPT or Wanda pruning cost."""
+    """Rank columns by SparseGPT loss or full-column Wanda sensitivity."""
     if ordering == "sparsegpt":
         if hessian_factor is None:
             raise ValueError("SparseGPT ordering requires a Hessian factor")
@@ -116,6 +121,7 @@ def column_permutation(
         if activation_norms is None:
             raise ValueError("Wanda ordering requires calibration activation norms")
         scores = weight.float().abs() * activation_norms.reshape(1, -1)
+        return torch.argsort(scores.sum(dim=0), stable=True)
     else:
         raise ValueError("ordering must be 'sparsegpt' or 'wanda'")
 
