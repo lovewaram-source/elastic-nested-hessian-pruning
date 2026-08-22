@@ -13,6 +13,25 @@ from .data import get_loaders
 
 from .ablate import AblateGPT 
 
+
+ELASTIC_SPARSEGPT_ORDERINGS = {
+    "elastic_sparsegpt": "sparsegpt",
+    "elastic_wanda_sparsegpt": "wanda",
+}
+
+
+def is_elastic_sparsegpt_method(method):
+    return method in ELASTIC_SPARSEGPT_ORDERINGS
+
+
+def elastic_ordering_for_method(method):
+    try:
+        return ELASTIC_SPARSEGPT_ORDERINGS[method]
+    except KeyError as error:
+        raise ValueError(
+            f"unknown elastic SparseGPT method: {method}"
+        ) from error
+
 def find_layers(module, layers=[nn.Linear], name=''):
     """
     Recursively find the layers of a certain type in a module.
@@ -444,7 +463,7 @@ def prepare_elastic_sparsegpt(args, model, tokenizer, dev, plan_store):
                 print(f"preparing elastic plan layer {layer_index} name {name}")
                 plans[name] = pruner.prepare_plan(
                     percdamp=0.01,
-                    ordering=getattr(args, "elastic_ordering", "wanda"),
+                    ordering=elastic_ordering_for_method(args.prune_method),
                 )
                 pruner.free()
             plan_store.put_layer(layer_index, plans)

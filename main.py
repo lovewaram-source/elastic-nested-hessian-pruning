@@ -9,6 +9,7 @@ from importlib.metadata import version
 from lib.prune import (
     apply_elastic_sparsegpt_stage,
     check_sparsity,
+    is_elastic_sparsegpt_method,
     find_layers,
     prepare_elastic_sparsegpt,
     prune_ablate,
@@ -65,14 +66,8 @@ def build_parser():
         default=None,
         help='Base directory for temporary disk-backed elastic plans.',
     )
-    parser.add_argument(
-        '--elastic_ordering',
-        choices=['wanda', 'sparsegpt'],
-        default='wanda',
-        help='Global column ordering for elastic_sparsegpt.',
-    )
     parser.add_argument("--sparsity_type", type=str, choices=["unstructured", "4:8", "2:4"])
-    parser.add_argument("--prune_method", type=str, choices=["magnitude", "wanda", "sparsegpt", "elastic_sparsegpt",
+    parser.add_argument("--prune_method", type=str, choices=["magnitude", "wanda", "sparsegpt", "elastic_sparsegpt", "elastic_wanda_sparsegpt",
                         "ablate_mag_seq", "ablate_wanda_seq", "ablate_mag_iter", "ablate_wanda_iter", "search"])
     parser.add_argument("--cache_dir", default="llm_weights", type=str )
     parser.add_argument('--use_variant', action="store_true", help="whether to use the wanda variant described in the appendix")
@@ -107,10 +102,10 @@ def main():
         device = model.hf_device_map["lm_head"]
     print("use device ", device)
 
-    if args.prune_method == "elastic_sparsegpt" and args.elastic_sparsities:
+    if is_elastic_sparsegpt_method(args.prune_method) and args.elastic_sparsities:
         elastic_stages = validate_elastic_sparsegpt_stages(args.elastic_sparsities)
         if prune_n != 0 or prune_m != 0:
-            raise ValueError("elastic_sparsegpt supports unstructured sparsity only")
+            raise ValueError("elastic SparseGPT methods support unstructured sparsity only")
 
         multiple_stages = len(elastic_stages) > 1
         plan_store = make_elastic_plan_store(
@@ -167,7 +162,7 @@ def main():
                 else args.save
             )
             os.makedirs(stage_save, exist_ok=True)
-            save_filepath = os.path.join(stage_save, "log_elastic_sparsegpt.txt")
+            save_filepath = os.path.join(stage_save, f"log_{args.prune_method}.txt")
             with open(save_filepath, "w") as f:
                 f.write(
                     format_elastic_result_log(
@@ -211,7 +206,7 @@ def main():
             prune_magnitude(args, model, tokenizer, device, prune_n=prune_n, prune_m=prune_m)
         elif args.prune_method == "sparsegpt":
             prune_sparsegpt(args, model, tokenizer, device, prune_n=prune_n, prune_m=prune_m)
-        elif args.prune_method == "elastic_sparsegpt":
+        elif is_elastic_sparsegpt_method(args.prune_method):
             prune_elastic_sparsegpt(
                 args,
                 model,

@@ -274,7 +274,7 @@ class ElasticSparseGPT(SparseGPT):
         self,
         percdamp: float = 0.01,
         permutation: torch.Tensor | None = None,
-        ordering: str = "wanda",
+        ordering: str = "sparsegpt",
     ) -> ElasticSparseGPTPlan:
         """Consume the collected Hessian and return a reusable CPU plan."""
         weight = _weight_matrix(self.layer)

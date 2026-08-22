@@ -49,7 +49,7 @@ python main.py \
 We provide a quick overview of the arguments:  
 - `--model`: The identifier for the LLaMA model on the Hugging Face model hub.
 - `--cache_dir`: Directory for loading or storing LLM weights. The default is `llm_weights`.
-- `--prune_method`: We have implemented three pruning methods, namely [`magnitude`, `wanda`, `sparsegpt`].
+- `--prune_method`: Base methods are [`magnitude`, `wanda`, `sparsegpt`]; elastic variants are [`elastic_sparsegpt`, `elastic_wanda_sparsegpt`].
 - `--sparsity_ratio`: Denotes the percentage of weights to be pruned.
 - `--sparsity_type`: Specifies the type of sparsity [`unstructured`, `2:4`, `4:8`].
 - `--use_variant`: Whether to use the Wanda variant, default is `False`. 
@@ -57,13 +57,15 @@ We provide a quick overview of the arguments:
 
 ### Elastic Reordered SparseGPT experiment
 
-The experimental `elastic_sparsegpt` method prepares each linear layer once from the same dense-reference calibration pass. Preparation computes one Hessian/Cholesky factor and one global input-column permutation per linear layer. By default, columns are ranked by the Wanda cost of pruning their lowest-scored 80% of weights: `abs(weight) * calibration_activation_norm`. Use `--elastic_ordering sparsegpt` to instead rank columns by the previous Bottom-80% SparseGPT loss for an ablation.
+The two elastic methods prepare each linear layer once from the same dense-reference calibration pass. Preparation computes one Hessian/Cholesky factor and one global input-column permutation per linear layer. `elastic_sparsegpt` preserves the original Bottom-80% SparseGPT loss ordering. `elastic_wanda_sparsegpt` is a separate method that ranks columns by the Bottom-80% Wanda cost, `abs(weight) * calibration_activation_norm`. The method name selects the ordering; there is no separate ordering flag.
 
 For a target sparsity `p` in `[0.1, 0.8]`, the method activates the reordered prefix `p / 0.8` and applies an 80% SparseGPT mask inside each 128-column compensation segment. The stages form one continuous path: 10% starts from the dense model, 20% freezes the 10% prefix and prunes only the next interval, 30% continues from 20%, and so on. Compensation flows only into columns to the right, so masks are strictly nested.
 
 The prepared factors can be kept in CPU memory (faster) or stored as one file per transformer layer on disk (lower peak CPU memory). Preparation is shared by all requested stages; it is not repeated eight times.
 
 Use identical model, calibration sample, seed, and sparsity settings for the baseline and experimental runs:
+
+Use `elastic_sparsegpt` in the elastic command for SparseGPT ordering, or `elastic_wanda_sparsegpt` for Wanda ordering.
 
 ```sh
 python main.py \
@@ -77,10 +79,9 @@ python main.py \
 
 python main.py \
   --model <MODEL_PATH> \
-  --prune_method elastic_sparsegpt \
+  --prune_method elastic_wanda_sparsegpt \
   --sparsity_type unstructured \
   --elastic_sparsities 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 \
-  --elastic_ordering wanda \
   --elastic_cache_mode memory \
   --nsamples 128 \
   --seed 0 \
@@ -92,10 +93,9 @@ If the factors do not fit in CPU memory, use disk-backed caching:
 ```sh
 python main.py \
   --model <MODEL_PATH> \
-  --prune_method elastic_sparsegpt \
+  --prune_method elastic_wanda_sparsegpt \
   --sparsity_type unstructured \
   --elastic_sparsities 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 \
-  --elastic_ordering wanda \
   --elastic_cache_mode disk \
   --elastic_cache_dir /data/elastic_sparsegpt_cache \
   --nsamples 128 \

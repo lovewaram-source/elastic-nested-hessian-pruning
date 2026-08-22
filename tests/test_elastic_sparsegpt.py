@@ -412,7 +412,11 @@ class OrchestrationValidationTests(unittest.TestCase):
 
         model = TinyModel()
         original = model.model.layers[0].proj.weight.detach().clone()
-        args = SimpleNamespace(nsamples=2, seed=0)
+        args = SimpleNamespace(
+            nsamples=2,
+            seed=0,
+            prune_method="elastic_sparsegpt",
+        )
         tokenizer = object()
         dataloader = [
             (torch.zeros((1, 2), dtype=torch.long),),
@@ -515,6 +519,34 @@ class OrchestrationValidationTests(unittest.TestCase):
 
 
 class CliExposureTests(unittest.TestCase):
+    def test_low_level_elastic_plan_defaults_to_sparsegpt_ordering(self):
+        import inspect
+
+        from lib.elastic_sparsegpt import ElasticSparseGPT
+
+        parameter = inspect.signature(ElasticSparseGPT.prepare_plan).parameters[
+            "ordering"
+        ]
+        self.assertEqual(parameter.default, "sparsegpt")
+
+    def test_elastic_method_names_select_distinct_orderings(self):
+        from lib.prune import elastic_ordering_for_method
+
+        self.assertEqual(
+            elastic_ordering_for_method("elastic_sparsegpt"),
+            "sparsegpt",
+        )
+        self.assertEqual(
+            elastic_ordering_for_method("elastic_wanda_sparsegpt"),
+            "wanda",
+        )
+
+    def test_rejects_unknown_elastic_method_when_selecting_ordering(self):
+        from lib.prune import elastic_ordering_for_method
+
+        with self.assertRaisesRegex(ValueError, "unknown elastic SparseGPT method"):
+            elastic_ordering_for_method("elastic_unknown")
+
     def test_parser_accepts_elastic_disk_cache_options(self):
         from main import build_parser
 
@@ -542,14 +574,23 @@ class CliExposureTests(unittest.TestCase):
         self.assertEqual(args.elastic_cache_mode, "memory")
         self.assertIsNone(args.elastic_cache_dir)
 
-    def test_parser_defaults_to_wanda_elastic_ordering(self):
+    def test_parser_accepts_wanda_ordered_elastic_method(self):
+        from main import build_parser
+
+        args = build_parser().parse_args(
+            ["--prune_method", "elastic_wanda_sparsegpt"]
+        )
+
+        self.assertEqual(args.prune_method, "elastic_wanda_sparsegpt")
+
+    def test_parser_does_not_expose_ambiguous_elastic_ordering_flag(self):
         from main import build_parser
 
         args = build_parser().parse_args(
             ["--prune_method", "elastic_sparsegpt"]
         )
 
-        self.assertEqual(args.elastic_ordering, "wanda")
+        self.assertFalse(hasattr(args, "elastic_ordering"))
 
     def test_parser_removes_the_obsolete_group_count_option(self):
         from main import build_parser
