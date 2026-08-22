@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn 
 from .sparsegpt import SparseGPT 
 from .elastic_sparsegpt import (
+    ELASTIC_SPARSITY_STAGES,
     ElasticSparseGPT,
     apply_elastic_sparsegpt_stage as apply_elastic_layer_stage,
 )
@@ -326,8 +327,13 @@ def prune_sparsegpt(args, model, tokenizer, dev, prune_n=0, prune_m=0):
 
 def validate_elastic_sparsegpt_stages(sparsities):
     stages = list(sparsities)
-    if not stages or any(not 0.1 <= sparsity <= 0.8 for sparsity in stages):
-        raise ValueError("elastic_sparsegpt sparsities must be in [0.1, 0.8]")
+    if not stages or any(
+        not any(abs(sparsity - allowed) < 1e-8 for allowed in ELASTIC_SPARSITY_STAGES)
+        for sparsity in stages
+    ):
+        raise ValueError(
+            "elastic_sparsegpt stages must use 0.2, 0.3, ..., 0.8"
+        )
     if any(current <= previous for previous, current in zip(stages, stages[1:])):
         raise ValueError("elastic_sparsegpt stages must be strictly increasing")
     return stages
@@ -345,15 +351,24 @@ def run_prepared_elastic_stages(
     apply,
     on_stage,
     clock=time.perf_counter,
+    synchronize=None,
 ):
+    def synchronize_if_needed():
+        if synchronize is not None:
+            synchronize()
+
+    synchronize_if_needed()
     preparation_start = clock()
     prepared = prepare()
+    synchronize_if_needed()
     preparation_seconds = clock() - preparation_start
     cumulative_seconds = preparation_seconds
     previous = 0.0
     for current in validate_elastic_sparsegpt_stages(stages):
+        synchronize_if_needed()
         stage_start = clock()
         apply(prepared, previous, current)
+        synchronize_if_needed()
         stage_seconds = clock() - stage_start
         cumulative_seconds += stage_seconds
         on_stage(

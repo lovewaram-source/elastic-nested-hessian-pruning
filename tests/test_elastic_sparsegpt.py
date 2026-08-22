@@ -6,47 +6,48 @@ import torch
 
 
 class PrefixStageTests(unittest.TestCase):
-    def test_prefix_width_follows_the_eighty_percent_rule(self):
+    def test_seven_slice_boundaries_are_twenty_then_ten_percent_stages(self):
         from lib.elastic_sparsegpt import prefix_column_count
 
-        self.assertEqual(prefix_column_count(columns=4096, sparsity=0.10), 512)
         self.assertEqual(prefix_column_count(columns=4096, sparsity=0.20), 1024)
         self.assertEqual(prefix_column_count(columns=4096, sparsity=0.30), 1536)
         self.assertEqual(prefix_column_count(columns=4096, sparsity=0.80), 4096)
 
-    def test_prefix_segments_stop_exactly_at_the_stage_boundary(self):
-        from lib.elastic_sparsegpt import iter_prefix_segments
-
-        self.assertEqual(
-            iter_prefix_segments(columns=11008, sparsity=0.10, blocksize=128),
-            [
-                (0, 128),
-                (128, 256),
-                (256, 384),
-                (384, 512),
-                (512, 640),
-                (640, 768),
-                (768, 896),
-                (896, 1024),
-                (1024, 1152),
-                (1152, 1280),
-                (1280, 1376),
-            ],
-        )
-
-    def test_second_stage_opens_only_the_new_prefix_interval(self):
+    def test_full_schedule_is_exactly_seven_compensation_blocks(self):
         from lib.elastic_sparsegpt import iter_stage_segments
 
         segments = iter_stage_segments(
             columns=4096,
-            previous_sparsity=0.20,
-            sparsity=0.30,
+            previous_sparsity=0.0,
+            sparsity=0.80,
             blocksize=128,
         )
 
-        self.assertEqual(segments[0], (1024, 1152))
-        self.assertEqual(segments[-1], (1408, 1536))
-        self.assertEqual(sum(end - start for start, end in segments), 512)
+        self.assertEqual(
+            segments,
+            [
+                (0, 1024),
+                (1024, 1536),
+                (1536, 2048),
+                (2048, 2560),
+                (2560, 3072),
+                (3072, 3584),
+                (3584, 4096),
+            ],
+        )
+
+    def test_second_stage_is_one_whole_compensation_block(self):
+        from lib.elastic_sparsegpt import iter_stage_segments
+
+        self.assertEqual(
+            iter_stage_segments(
+                columns=4096,
+                previous_sparsity=0.20,
+                sparsity=0.30,
+                blocksize=128,
+            ),
+            [(1024, 1536)],
+        )
 
 
 class MaskPlanningTests(unittest.TestCase):
@@ -98,6 +99,30 @@ class MaskPlanningTests(unittest.TestCase):
                 [1.0, 5.0],
                 [1.0, 5.0],
             ]
+        )
+
+    def test_wanda_column_order_sums_the_entire_column(self):
+        from lib.elastic_sparsegpt import column_permutation
+
+        weight = torch.tensor(
+            [
+                [1.0, 2.0],
+                [1.0, 2.0],
+                [1.0, 2.0],
+                [1.0, 2.0],
+                [10.0, 2.0],
+            ]
+        )
+
+        self.assertTrue(
+            torch.equal(
+                column_permutation(
+                    weight,
+                    ordering="wanda",
+                    activation_norms=torch.ones(2),
+                ),
+                torch.tensor([1, 0]),
+            )
         )
 
         self.assertTrue(
@@ -152,17 +177,17 @@ class ElasticCompensationTests(unittest.TestCase):
         plan = collector.prepare_plan(percdamp=0.01)
 
         apply_elastic_sparsegpt_stage(
-            layer, plan, 0.10, 0.0, blocksize=2
-        )
-        mask_10 = layer.weight == 0
-        apply_elastic_sparsegpt_stage(
-            layer, plan, 0.20, 0.10, blocksize=2
+            layer, plan, 0.20, 0.0, blocksize=2
         )
         mask_20 = layer.weight == 0
+        apply_elastic_sparsegpt_stage(
+            layer, plan, 0.30, 0.20, blocksize=2
+        )
+        mask_30 = layer.weight == 0
 
-        self.assertEqual(int(mask_10.sum()), 2)
         self.assertEqual(int(mask_20.sum()), 3)
-        self.assertTrue(torch.all(mask_10 <= mask_20))
+        self.assertEqual(int(mask_30.sum()), 5)
+        self.assertTrue(torch.all(mask_20 <= mask_30))
         self.assertIsNone(collector.H)
 
     def test_later_stage_does_not_change_the_frozen_reordered_prefix(self):
@@ -183,19 +208,19 @@ class ElasticCompensationTests(unittest.TestCase):
         plan = collector.prepare_plan(percdamp=0.01)
 
         apply_elastic_sparsegpt_stage(
-            layer, plan, 0.10, 0.0, blocksize=2
+            layer, plan, 0.20, 0.0, blocksize=2
         )
-        reordered_after_10 = layer.weight[:, plan.permutation].clone()
+        reordered_after_20 = layer.weight[:, plan.permutation].clone()
         apply_elastic_sparsegpt_stage(
-            layer, plan, 0.20, 0.10, blocksize=2
+            layer, plan, 0.30, 0.20, blocksize=2
         )
-        reordered_after_20 = layer.weight[:, plan.permutation]
-        frozen_end = prefix_column_count(8, 0.10)
+        reordered_after_30 = layer.weight[:, plan.permutation]
+        frozen_end = prefix_column_count(8, 0.20)
 
         self.assertTrue(
             torch.equal(
+                reordered_after_30[:, :frozen_end],
                 reordered_after_20[:, :frozen_end],
-                reordered_after_10[:, :frozen_end],
             )
         )
 
@@ -301,7 +326,7 @@ class ElasticCompensationTests(unittest.TestCase):
         pruner.H = torch.eye(4)
 
         pruner.fasterprune(
-            sparsity=0.25,
+            sparsity=0.20,
             blocksize=2,
             percdamp=0.01,
         )
@@ -331,6 +356,26 @@ class ElasticCompensationTests(unittest.TestCase):
 
 
 class OrchestrationValidationTests(unittest.TestCase):
+    def test_orchestration_synchronizes_before_and_after_each_timed_region(self):
+        from lib.prune import run_prepared_elastic_stages
+
+        events = []
+        ticks = iter([0.0, 2.0, 2.0, 5.0])
+
+        run_prepared_elastic_stages(
+            [0.2],
+            lambda: events.append("prepare") or object(),
+            lambda _store, _previous, _current: events.append("apply"),
+            lambda *_args: None,
+            clock=lambda: next(ticks),
+            synchronize=lambda: events.append("sync"),
+        )
+
+        self.assertEqual(
+            events,
+            ["sync", "prepare", "sync", "sync", "apply", "sync"],
+        )
+
     def test_multi_stage_orchestration_prepares_once(self):
         from lib.prune import run_prepared_elastic_stages
 
@@ -346,7 +391,7 @@ class OrchestrationValidationTests(unittest.TestCase):
 
         ticks = iter([0.0, 5.0, 5.0, 7.0, 7.0, 10.0, 10.0, 14.0])
         run_prepared_elastic_stages(
-            [0.1, 0.2, 0.3],
+            [0.2, 0.3, 0.4],
             prepare,
             apply,
             lambda store, previous, current, prep, stage, cumulative: timings.append(
@@ -359,7 +404,7 @@ class OrchestrationValidationTests(unittest.TestCase):
             calls,
             {
                 "prepare": 1,
-                "apply": [(0.0, 0.1), (0.1, 0.2), (0.2, 0.3)],
+                "apply": [(0.0, 0.2), (0.2, 0.3), (0.3, 0.4)],
             },
         )
         self.assertEqual(
@@ -475,24 +520,30 @@ class OrchestrationValidationTests(unittest.TestCase):
             model,
             torch.device("cpu"),
             store,
-            sparsity=0.10,
+            sparsity=0.20,
             previous_sparsity=0.0,
         )
 
         self.assertEqual(
             int((model.model.layers[0].proj.weight == 0).sum()),
-            2,
+            3,
         )
 
     def test_accepts_only_strictly_increasing_elastic_stages(self):
         from lib.prune import validate_elastic_sparsegpt_stages
 
         self.assertEqual(
-            validate_elastic_sparsegpt_stages([0.1, 0.2, 0.3]),
-            [0.1, 0.2, 0.3],
+            validate_elastic_sparsegpt_stages([0.2, 0.3, 0.4]),
+            [0.2, 0.3, 0.4],
         )
         with self.assertRaisesRegex(ValueError, "strictly increasing"):
-            validate_elastic_sparsegpt_stages([0.1, 0.3, 0.2])
+            validate_elastic_sparsegpt_stages([0.2, 0.4, 0.3])
+
+    def test_rejects_stage_outside_the_seven_slice_schedule(self):
+        from lib.prune import validate_elastic_sparsegpt_stages
+
+        with self.assertRaisesRegex(ValueError, "0.2, 0.3, ..., 0.8"):
+            validate_elastic_sparsegpt_stages([0.1, 0.2])
 
     def test_rejects_structured_sparsity(self):
         from lib.prune import validate_elastic_sparsegpt_args
@@ -507,13 +558,13 @@ class OrchestrationValidationTests(unittest.TestCase):
 
         args = SimpleNamespace(sparsity_ratio=0.9)
 
-        with self.assertRaisesRegex(ValueError, r"\[0.1, 0.8\]"):
+        with self.assertRaisesRegex(ValueError, "0.2, 0.3, ..., 0.8"):
             validate_elastic_sparsegpt_args(args, prune_n=0, prune_m=0)
 
     def test_accepts_prefix_schedule_ratios(self):
         from lib.prune import validate_elastic_sparsegpt_args
 
-        for ratio in (0.1, 0.2, 0.8):
+        for ratio in (0.2, 0.3, 0.8):
             args = SimpleNamespace(sparsity_ratio=ratio)
             validate_elastic_sparsegpt_args(args, prune_n=0, prune_m=0)
 
@@ -608,13 +659,13 @@ class CliExposureTests(unittest.TestCase):
                 "--prune_method",
                 "elastic_sparsegpt",
                 "--elastic_sparsities",
-                "0.1",
                 "0.2",
                 "0.3",
+                "0.4",
             ]
         )
 
-        self.assertEqual(args.elastic_sparsities, [0.1, 0.2, 0.3])
+        self.assertEqual(args.elastic_sparsities, [0.2, 0.3, 0.4])
 
 
 if __name__ == "__main__":
