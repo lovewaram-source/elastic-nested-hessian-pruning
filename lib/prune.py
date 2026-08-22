@@ -532,6 +532,7 @@ def prepare_elastic_sparsegpt(args, model, tokenizer, dev, plan_store):
             "plan_cache_write_seconds",
         ):
             print(f"{name} {timings.get(name, 0.0):.2f}")
+    return timings
 
 
 @torch.no_grad()

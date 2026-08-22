@@ -69,7 +69,7 @@ class MaskPlanningTests(unittest.TestCase):
             torch.equal(column_permutation(weight, factor), torch.tensor([1, 2, 0]))
         )
 
-    def test_column_order_uses_cost_of_weights_that_will_be_pruned(self):
+    def test_sparsegpt_column_order_uses_the_full_column_sum(self):
         from lib.elastic_sparsegpt import column_permutation
 
         weight = torch.tensor(
@@ -84,7 +84,7 @@ class MaskPlanningTests(unittest.TestCase):
         factor = torch.eye(2)
 
         self.assertTrue(
-            torch.equal(column_permutation(weight, factor), torch.tensor([0, 1]))
+            torch.equal(column_permutation(weight, factor), torch.tensor([1, 0]))
         )
 
     def test_wanda_column_order_uses_calibration_activation_norms(self):

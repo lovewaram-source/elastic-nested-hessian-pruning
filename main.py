@@ -118,9 +118,11 @@ def main():
             args.elastic_cache_dir,
         )
         success = False
+        preparation_breakdown = None
 
         def prepare():
-            prepare_elastic_sparsegpt(
+            nonlocal preparation_breakdown
+            preparation_breakdown = prepare_elastic_sparsegpt(
                 args,
                 model,
                 tokenizer,
@@ -178,6 +180,7 @@ def main():
                         preparation_time_seconds=preparation_time_seconds,
                         stage_pruning_time_seconds=stage_pruning_time_seconds,
                         cumulative_pruning_time_seconds=cumulative_pruning_time_seconds,
+                        preparation_breakdown=preparation_breakdown,
                     )
                 )
 

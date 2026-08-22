@@ -112,7 +112,7 @@ def column_permutation(
     ordering: str = "sparsegpt",
     activation_norms: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Rank columns by SparseGPT loss or full-column Wanda sensitivity."""
+    """Rank columns by full-column SparseGPT or Wanda sensitivity."""
     if ordering == "sparsegpt":
         if hessian_factor is None:
             raise ValueError("SparseGPT ordering requires a Hessian factor")
@@ -126,19 +126,7 @@ def column_permutation(
     else:
         raise ValueError("ordering must be 'sparsegpt' or 'wanda'")
 
-    prune_count = round(MAX_SPARSITY * scores.shape[0])
-    retained_count = scores.shape[0] - prune_count
-
     column_costs = scores.sum(dim=0)
-    if retained_count:
-        retained_scores = torch.topk(
-            scores,
-            retained_count,
-            dim=0,
-            largest=True,
-            sorted=False,
-        ).values
-        column_costs -= retained_scores.sum(dim=0)
     return torch.argsort(column_costs, stable=True)
 
 
