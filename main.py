@@ -49,6 +49,12 @@ def build_parser():
     parser.add_argument('--nsamples', type=int, default=128, help='Number of calibration samples.')
     parser.add_argument('--sparsity_ratio', type=float, default=0, help='Sparsity level')
     parser.add_argument(
+        '--sparsegpt_blocksize',
+        type=int,
+        default=128,
+        help='Column block size used only by the original SparseGPT pruner.',
+    )
+    parser.add_argument(
         '--elastic_sparsities',
         type=float,
         nargs='+',
@@ -133,10 +139,8 @@ def main():
             return plan_store
 
         def apply(store, previous_sparsity, stage_sparsity):
-            print(
-                f"elastic stage {previous_sparsity:.1f} -> "
-                f"{stage_sparsity:.1f}"
-            )
+            source = "dense (0.0)" if previous_sparsity == 0.0 else f"{previous_sparsity:.1f}"
+            print(f"Pruning stage: {source} -> {stage_sparsity:.1f}")
             apply_elastic_sparsegpt_stage(
                 model,
                 device,
@@ -183,6 +187,8 @@ def main():
                         stage_pruning_time_seconds=stage_pruning_time_seconds,
                         cumulative_pruning_time_seconds=cumulative_pruning_time_seconds,
                         preparation_breakdown=preparation_breakdown,
+                        previous_sparsity=previous_sparsity,
+                        target_sparsity=stage_sparsity,
                     )
                 )
 

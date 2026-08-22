@@ -211,15 +211,16 @@ class ElasticCompensationTests(unittest.TestCase):
             "lib.elastic_sparsegpt.column_permutation",
             wraps=column_permutation,
         ) as ordering:
-            apply_dynamic_wanda_sparsegpt_stage(layer, plan, 0.20, 0.0)
+            plan = apply_dynamic_wanda_sparsegpt_stage(layer, plan, 0.20, 0.0)
             mask_20 = layer.weight == 0
-            apply_dynamic_wanda_sparsegpt_stage(layer, plan, 0.30, 0.20)
+            plan = apply_dynamic_wanda_sparsegpt_stage(layer, plan, 0.30, 0.20)
 
         mask_30 = layer.weight == 0
         second_order_weight = ordering.call_args_list[1].args[0]
 
         self.assertEqual(ordering.call_count, 2)
-        self.assertTrue(torch.any(second_order_weight == 0))
+        self.assertEqual(second_order_weight.shape[1], 6)
+        self.assertEqual(int(plan.processed_columns.sum()), 3)
         self.assertEqual(int(mask_20.sum()), 3)
         self.assertEqual(int(mask_30.sum()), 5)
         self.assertTrue(torch.all(mask_20 <= mask_30))
@@ -816,6 +817,15 @@ class OrchestrationValidationTests(unittest.TestCase):
 
 
 class CliExposureTests(unittest.TestCase):
+    def test_parser_accepts_sparsegpt_blocksize(self):
+        from main import build_parser
+
+        args = build_parser().parse_args(
+            ["--prune_method", "sparsegpt", "--sparsegpt_blocksize", "512"]
+        )
+
+        self.assertEqual(args.sparsegpt_blocksize, 512)
+
     def test_low_level_elastic_plan_defaults_to_sparsegpt_ordering(self):
         import inspect
 
