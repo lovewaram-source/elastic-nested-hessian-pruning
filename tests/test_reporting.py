@@ -8,6 +8,7 @@ class ResultLogFormattingTests(unittest.TestCase):
         from lib.reporting import format_elastic_result_log
 
         result_log = format_elastic_result_log(
+            model_name="llama-2-7b-hf",
             method="elastic_sparsegpt",
             sparsity_ratio=0.2,
             perplexity=5.8,
@@ -18,13 +19,15 @@ class ResultLogFormattingTests(unittest.TestCase):
 
         self.assertEqual(
             result_log,
-            "method\tactual_sparsity\tppl_test\tpreparation_time_seconds\t"
+            "model\tmethod\tactual_sparsity\tppl_test\tpreparation_time_seconds\t"
             "stage_pruning_time_seconds\tcumulative_pruning_time_seconds\n"
-            "elastic_sparsegpt\t0.2000\t5.8000\t200.00\t18.00\t236.00\n",
+            "llama-2-7b-hf\telastic_sparsegpt\t0.2000\t5.8000\t"
+            "200.00\t18.00\t236.00\n",
         )
 
     def test_result_log_includes_pruning_duration(self):
         result_log = format_result_log(
+            model_name="llama-2-7b-hf",
             method="wanda",
             sparsity_ratio=0.5,
             perplexity=6.42,
@@ -33,8 +36,8 @@ class ResultLogFormattingTests(unittest.TestCase):
 
         self.assertEqual(
             result_log,
-            "method\tactual_sparsity\tppl_test\tpruning_time_seconds\n"
-            "wanda\t0.5000\t6.4200\t183.42\n",
+            "model\tmethod\tactual_sparsity\tppl_test\tpruning_time_seconds\n"
+            "llama-2-7b-hf\twanda\t0.5000\t6.4200\t183.42\n",
         )
 
 
