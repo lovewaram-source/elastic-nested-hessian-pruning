@@ -16,6 +16,24 @@ def make_plan():
 
 
 class MemoryElasticPlanStoreTests(unittest.TestCase):
+    def test_round_trips_dynamic_wanda_statistics(self):
+        from lib.elastic_plan_store import MemoryElasticPlanStore
+
+        plan = ElasticSparseGPTPlan(
+            permutation=torch.tensor([0, 1]),
+            hessian_factor=torch.eye(2),
+            dead_columns=torch.tensor([False, False]),
+            activation_norms=torch.tensor([2.0, 3.0]),
+            hessian_inverse=torch.tensor([[1.0, 0.1], [0.1, 1.0]]),
+        )
+        store = MemoryElasticPlanStore()
+        store.put_layer(3, {"self_attn.q_proj": plan})
+
+        loaded = store.get_layer(3)["self_attn.q_proj"]
+
+        self.assertTrue(torch.equal(loaded.activation_norms, plan.activation_norms))
+        self.assertTrue(torch.equal(loaded.hessian_inverse, plan.hessian_inverse))
+
     def test_round_trips_a_layer_plan(self):
         from lib.elastic_plan_store import MemoryElasticPlanStore
 

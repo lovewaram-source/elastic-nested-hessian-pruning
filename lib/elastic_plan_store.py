@@ -10,22 +10,30 @@ from .elastic_sparsegpt import ElasticSparseGPTPlan
 
 
 def _serialize(plans):
-    return {
-        name: {
+    serialized = {}
+    for name, plan in plans.items():
+        tensors = {
             "permutation": plan.permutation.detach().cpu(),
-            "hessian_factor": plan.hessian_factor.detach().float().cpu(),
             "dead_columns": plan.dead_columns.detach().cpu(),
         }
-        for name, plan in plans.items()
-    }
+        if plan.hessian_factor is not None:
+            tensors["hessian_factor"] = plan.hessian_factor.detach().float().cpu()
+        if plan.activation_norms is not None:
+            tensors["activation_norms"] = plan.activation_norms.detach().float().cpu()
+        if plan.hessian_inverse is not None:
+            tensors["hessian_inverse"] = plan.hessian_inverse.detach().float().cpu()
+        serialized[name] = tensors
+    return serialized
 
 
 def _deserialize(payload):
     return {
         name: ElasticSparseGPTPlan(
             permutation=tensors["permutation"],
-            hessian_factor=tensors["hessian_factor"],
+            hessian_factor=tensors.get("hessian_factor"),
             dead_columns=tensors["dead_columns"],
+            activation_norms=tensors.get("activation_norms"),
+            hessian_inverse=tensors.get("hessian_inverse"),
         )
         for name, tensors in payload.items()
     }

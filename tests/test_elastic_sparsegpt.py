@@ -159,6 +159,71 @@ class MaskPlanningTests(unittest.TestCase):
         self.assertTrue(torch.equal(restored, weight))
 
 class ElasticCompensationTests(unittest.TestCase):
+    def test_dynamic_wanda_plan_defers_ordering_until_the_first_stage(self):
+        from torch import nn
+
+        from lib.elastic_sparsegpt import ElasticSparseGPT, column_permutation
+
+        collector = ElasticSparseGPT(nn.Linear(4, 2, bias=False))
+        collector.H = torch.eye(4)
+
+        with patch(
+            "lib.elastic_sparsegpt.column_permutation",
+            wraps=column_permutation,
+        ) as ordering:
+            plan = collector.prepare_plan(
+                percdamp=0.01,
+                ordering="wanda",
+                retain_dynamic_wanda_statistics=True,
+            )
+
+        self.assertEqual(ordering.call_count, 0)
+        self.assertIsNone(plan.hessian_factor)
+        self.assertIsNotNone(plan.hessian_inverse)
+
+    def test_dynamic_wanda_reorders_surviving_columns_at_each_stage(self):
+        from torch import nn
+
+        from lib.elastic_sparsegpt import (
+            ElasticSparseGPT,
+            apply_dynamic_wanda_sparsegpt_stage,
+            column_permutation,
+        )
+
+        layer = nn.Linear(8, 2, bias=False)
+        layer.weight.data.copy_(
+            torch.tensor(
+                [
+                    [1.0, 2.0, 3.0, 4.0, 8.0, 9.0, 10.0, 11.0],
+                    [1.0, 2.0, 3.0, 4.0, 8.0, 9.0, 10.0, 11.0],
+                ]
+            )
+        )
+        collector = ElasticSparseGPT(layer)
+        collector.H = torch.eye(8)
+        plan = collector.prepare_plan(
+            percdamp=0.01,
+            ordering="wanda",
+            retain_dynamic_wanda_statistics=True,
+        )
+
+        with patch(
+            "lib.elastic_sparsegpt.column_permutation",
+            wraps=column_permutation,
+        ) as ordering:
+            apply_dynamic_wanda_sparsegpt_stage(layer, plan, 0.20, 0.0)
+            mask_20 = layer.weight == 0
+            apply_dynamic_wanda_sparsegpt_stage(layer, plan, 0.30, 0.20)
+
+        mask_30 = layer.weight == 0
+        second_order_weight = ordering.call_args_list[1].args[0]
+
+        self.assertEqual(ordering.call_count, 2)
+        self.assertTrue(torch.any(second_order_weight == 0))
+        self.assertEqual(int(mask_20.sum()), 3)
+        self.assertEqual(int(mask_30.sum()), 5)
+        self.assertTrue(torch.all(mask_20 <= mask_30))
+
     def test_plan_preparation_reports_factorization_and_ordering_time(self):
         from torch import nn
 
@@ -827,6 +892,15 @@ class CliExposureTests(unittest.TestCase):
         )
 
         self.assertEqual(args.prune_method, "elastic_wanda_sparsegpt")
+
+    def test_parser_accepts_dynamic_wanda_elastic_method(self):
+        from main import build_parser
+
+        args = build_parser().parse_args(
+            ["--prune_method", "elastic_wanda_dynamic_sparsegpt"]
+        )
+
+        self.assertEqual(args.prune_method, "elastic_wanda_dynamic_sparsegpt")
 
     def test_parser_does_not_expose_ambiguous_elastic_ordering_flag(self):
         from main import build_parser

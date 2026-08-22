@@ -7,6 +7,7 @@ from .elastic_sparsegpt import (
     ELASTIC_SPARSITY_STAGES,
     ElasticSparseGPT,
     apply_elastic_sparsegpt_stage as apply_elastic_layer_stage,
+    apply_dynamic_wanda_sparsegpt_stage,
 )
 from .elastic_plan_store import MemoryElasticPlanStore
 from .layerwrapper import WrappedGPT
@@ -18,6 +19,7 @@ from .ablate import AblateGPT
 ELASTIC_SPARSEGPT_ORDERINGS = {
     "elastic_sparsegpt": "sparsegpt",
     "elastic_wanda_sparsegpt": "wanda",
+    "elastic_wanda_dynamic_sparsegpt": "wanda",
 }
 
 
@@ -32,6 +34,10 @@ def elastic_ordering_for_method(method):
         raise ValueError(
             f"unknown elastic SparseGPT method: {method}"
         ) from error
+
+
+def is_dynamic_wanda_elastic_method(method):
+    return method == "elastic_wanda_dynamic_sparsegpt"
 
 
 def find_layers(module, layers=[nn.Linear], name=''):
@@ -509,6 +515,9 @@ def prepare_elastic_sparsegpt(args, model, tokenizer, dev, plan_store):
                     percdamp=0.01,
                     ordering=ordering,
                     timings=timings,
+                    retain_dynamic_wanda_statistics=is_dynamic_wanda_elastic_method(
+                        args.prune_method
+                    ),
                 )
                 pruner.free()
             cache_write_start = start_timing()
@@ -542,6 +551,7 @@ def apply_elastic_sparsegpt_stage(
     plan_store,
     sparsity,
     previous_sparsity=0.0,
+    dynamic_wanda=False,
 ):
     validate_elastic_sparsegpt_stages([sparsity])
     if not 0.0 <= previous_sparsity < sparsity:
@@ -559,13 +569,21 @@ def apply_elastic_sparsegpt_stage(
             )
         for name, target_layer in subset.items():
             print(f"elastic stage layer {layer_index} name {name}")
-            apply_elastic_layer_stage(
-                target_layer,
-                plans[name],
-                sparsity,
-                previous_sparsity=previous_sparsity,
-                blocksize=128,
-            )
+            if dynamic_wanda:
+                apply_dynamic_wanda_sparsegpt_stage(
+                    target_layer,
+                    plans[name],
+                    sparsity,
+                    previous_sparsity=previous_sparsity,
+                )
+            else:
+                apply_elastic_layer_stage(
+                    target_layer,
+                    plans[name],
+                    sparsity,
+                    previous_sparsity=previous_sparsity,
+                    blocksize=128,
+                )
         del plans
         torch.cuda.empty_cache()
 
@@ -597,6 +615,7 @@ def prune_elastic_sparsegpt(
             store,
             sparsity,
             previous_sparsity=previous_sparsity,
+            dynamic_wanda=is_dynamic_wanda_elastic_method(args.prune_method),
         )
         permutations = {}
         for layer_index in range(len(model.model.layers)):
