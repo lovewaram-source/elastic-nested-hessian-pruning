@@ -3,7 +3,13 @@
 import numpy as np
 import random
 import torch
-from datasets import load_dataset
+from datasets import load_dataset, load_from_disk
+
+
+LOCAL_C4_TRAIN = "/data/DataSet/llm_dataset/c4/c4train"
+LOCAL_C4_VALIDATION = "/data/DataSet/llm_dataset/c4/c4validation"
+LOCAL_WIKITEXT2_TRAIN = "/data/DataSet/llm_dataset/wikitext2/wikitext2_train"
+LOCAL_WIKITEXT2_TEST = "/data/DataSet/llm_dataset/wikitext2/wikitext2_test"
 
 # Set seed for reproducibility
 def set_seed(seed):
@@ -17,9 +23,9 @@ class TokenizerWrapper:
 
 # Load and process wikitext2 dataset
 def get_wikitext2(nsamples, seed, seqlen, tokenizer):
-    # Load train and test datasets
-    traindata = load_dataset('wikitext', 'wikitext-2-raw-v1', split='train')
-    testdata = load_dataset('wikitext', 'wikitext-2-raw-v1', split='test')
+    # Use server-local train/test datasets; evaluation must not access the Hub.
+    traindata = load_from_disk(LOCAL_WIKITEXT2_TRAIN)
+    testdata = load_from_disk(LOCAL_WIKITEXT2_TEST)
 
     # Encode datasets
     trainenc = tokenizer(" ".join(traindata['text']), return_tensors='pt')
@@ -39,9 +45,9 @@ def get_wikitext2(nsamples, seed, seqlen, tokenizer):
 
 # Load and process c4 dataset
 def get_c4(nsamples, seed, seqlen, tokenizer):
-    # Load train and validation datasets
-    traindata = load_dataset('allenai/c4', 'allenai--c4', data_files={'train': 'en/c4-train.00000-of-01024.json.gz'}, split='train')
-    valdata = load_dataset('allenai/c4', 'allenai--c4', data_files={'validation': 'en/c4-validation.00000-of-00008.json.gz'}, split='validation')
+    # Load the server-local C4 datasets; calibration must not access the Hub.
+    traindata = load_from_disk(LOCAL_C4_TRAIN)
+    valdata = load_from_disk(LOCAL_C4_VALIDATION)
 
     # Generate samples from training set
     random.seed(seed)

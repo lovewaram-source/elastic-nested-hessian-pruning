@@ -9,6 +9,8 @@ from importlib.metadata import version
 from lib.prune import (
     apply_elastic_sparsegpt_stage,
     check_sparsity,
+    is_dynamic_wanda_elastic_method,
+    is_prefix_obs_wanda_elastic_method,
     is_elastic_sparsegpt_method,
     find_layers,
     prepare_elastic_sparsegpt,
@@ -48,6 +50,12 @@ def build_parser():
     parser.add_argument('--nsamples', type=int, default=128, help='Number of calibration samples.')
     parser.add_argument('--sparsity_ratio', type=float, default=0, help='Sparsity level')
     parser.add_argument(
+        '--sparsegpt_blocksize',
+        type=int,
+        default=128,
+        help='Column block size used only by the original SparseGPT pruner.',
+    )
+    parser.add_argument(
         '--elastic_sparsities',
         type=float,
         nargs='+',
@@ -72,7 +80,7 @@ def build_parser():
         help='Print a synchronized breakdown of elastic preparation time.',
     )
     parser.add_argument("--sparsity_type", type=str, choices=["unstructured", "4:8", "2:4"])
-    parser.add_argument("--prune_method", type=str, choices=["magnitude", "wanda", "sparsegpt", "elastic_sparsegpt", "elastic_wanda_sparsegpt",
+    parser.add_argument("--prune_method", type=str, choices=["magnitude", "wanda", "sparsegpt", "elastic_sparsegpt", "elastic_wanda_sparsegpt", "elastic_wanda_dynamic_sparsegpt", "elastic_wanda_prefix_obs",
                         "ablate_mag_seq", "ablate_wanda_seq", "ablate_mag_iter", "ablate_wanda_iter", "search"])
     parser.add_argument("--cache_dir", default="llm_weights", type=str )
     parser.add_argument('--use_variant', action="store_true", help="whether to use the wanda variant described in the appendix")
@@ -118,9 +126,11 @@ def main():
             args.elastic_cache_dir,
         )
         success = False
+        preparation_breakdown = None
 
         def prepare():
-            prepare_elastic_sparsegpt(
+            nonlocal preparation_breakdown
+            preparation_breakdown = prepare_elastic_sparsegpt(
                 args,
                 model,
                 tokenizer,
@@ -130,16 +140,18 @@ def main():
             return plan_store
 
         def apply(store, previous_sparsity, stage_sparsity):
-            print(
-                f"elastic stage {previous_sparsity:.1f} -> "
-                f"{stage_sparsity:.1f}"
-            )
+            source = "dense (0.0)" if previous_sparsity == 0.0 else f"{previous_sparsity:.1f}"
+            print(f"Pruning stage: {source} -> {stage_sparsity:.1f}")
             apply_elastic_sparsegpt_stage(
                 model,
                 device,
                 store,
                 stage_sparsity,
                 previous_sparsity=previous_sparsity,
+                dynamic_wanda=is_dynamic_wanda_elastic_method(args.prune_method),
+                wanda_prefix_obs=is_prefix_obs_wanda_elastic_method(
+                    args.prune_method
+                ),
             )
 
         def on_stage(
@@ -178,6 +190,9 @@ def main():
                         preparation_time_seconds=preparation_time_seconds,
                         stage_pruning_time_seconds=stage_pruning_time_seconds,
                         cumulative_pruning_time_seconds=cumulative_pruning_time_seconds,
+                        preparation_breakdown=preparation_breakdown,
+                        previous_sparsity=previous_sparsity,
+                        target_sparsity=stage_sparsity,
                     )
                 )
 

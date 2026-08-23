@@ -33,6 +33,21 @@ def prefix_column_count(
     return round(columns * sparsity / max_sparsity)
 
 
+def prefix_stage_indices(
+    columns: int,
+    previous_sparsity: float,
+    sparsity: float,
+) -> tuple[int, int]:
+    """Return the newly opened interval in a fixed ordered column prefix."""
+    if columns < 1:
+        raise ValueError("columns must be positive")
+    if not 0.0 <= previous_sparsity < sparsity <= MAX_SPARSITY:
+        raise ValueError(
+            "stage sparsities must satisfy 0 <= previous < current <= max"
+        )
+    return round(previous_sparsity * columns), round(sparsity * columns)
+
+
 def iter_stage_segments(
     columns: int,
     previous_sparsity: float,
@@ -112,7 +127,7 @@ def column_permutation(
     ordering: str = "sparsegpt",
     activation_norms: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Rank columns by SparseGPT loss or full-column Wanda sensitivity."""
+    """Rank columns by full-column SparseGPT or Wanda sensitivity."""
     if ordering == "sparsegpt":
         if hessian_factor is None:
             raise ValueError("SparseGPT ordering requires a Hessian factor")
@@ -126,19 +141,7 @@ def column_permutation(
     else:
         raise ValueError("ordering must be 'sparsegpt' or 'wanda'")
 
-    prune_count = round(MAX_SPARSITY * scores.shape[0])
-    retained_count = scores.shape[0] - prune_count
-
     column_costs = scores.sum(dim=0)
-    if retained_count:
-        retained_scores = torch.topk(
-            scores,
-            retained_count,
-            dim=0,
-            largest=True,
-            sorted=False,
-        ).values
-        column_costs -= retained_scores.sum(dim=0)
     return torch.argsort(column_costs, stable=True)
 
 
@@ -169,22 +172,50 @@ class ElasticSparseGPTPlan:
     """Reusable second-order statistics for one reordered linear layer."""
 
     permutation: torch.Tensor
-    hessian_factor: torch.Tensor
+    hessian_factor: torch.Tensor | None
     dead_columns: torch.Tensor
+    activation_norms: torch.Tensor | None = None
+    hessian_inverse: torch.Tensor | None = None
+    processed_columns: torch.Tensor | None = None
 
     def validate_for(self, columns: int) -> None:
         if self.permutation.shape != (columns,):
             raise ValueError("plan permutation does not match layer columns")
-        if self.hessian_factor.shape != (columns, columns):
+        if self.hessian_factor is not None and self.hessian_factor.shape != (columns, columns):
             raise ValueError("plan Hessian factor does not match layer columns")
         if self.dead_columns.shape != (columns,):
             raise ValueError("plan dead-column mask does not match layer columns")
+        if self.activation_norms is not None and self.activation_norms.shape != (columns,):
+            raise ValueError("plan activation norms do not match layer columns")
+        if self.hessian_inverse is not None and self.hessian_inverse.shape != (columns, columns):
+            raise ValueError("plan Hessian inverse does not match layer columns")
+        if self.processed_columns is not None and self.processed_columns.shape != (columns,):
+            raise ValueError("plan processed-column mask does not match layer columns")
 
     def cpu(self) -> "ElasticSparseGPTPlan":
         return ElasticSparseGPTPlan(
             permutation=self.permutation.detach().cpu(),
-            hessian_factor=self.hessian_factor.detach().float().cpu(),
+            hessian_factor=(
+                None
+                if self.hessian_factor is None
+                else self.hessian_factor.detach().float().cpu()
+            ),
             dead_columns=self.dead_columns.detach().cpu(),
+            activation_norms=(
+                None
+                if self.activation_norms is None
+                else self.activation_norms.detach().float().cpu()
+            ),
+            hessian_inverse=(
+                None
+                if self.hessian_inverse is None
+                else self.hessian_inverse.detach().float().cpu()
+            ),
+            processed_columns=(
+                None
+                if self.processed_columns is None
+                else self.processed_columns.detach().cpu()
+            ),
         )
 
 
@@ -225,6 +256,8 @@ def apply_elastic_sparsegpt_stage(
     device = weight.device
     permutation = plan.permutation.to(device)
     inverse_permutation = invert_permutation(permutation)
+    if plan.hessian_factor is None:
+        raise ValueError("static elastic stage requires a Hessian factor")
     hessian_factor = plan.hessian_factor.to(device=device, dtype=torch.float32)
     dead_columns = plan.dead_columns.to(device)
 
@@ -274,6 +307,146 @@ def apply_elastic_sparsegpt_stage(
     )
 
 
+@torch.no_grad()
+def apply_wanda_prefix_obs_stage(
+    layer: nn.Module,
+    plan: ElasticSparseGPTPlan,
+    sparsity: float,
+    previous_sparsity: float = 0.0,
+) -> None:
+    """Delete a fixed Wanda-ordered prefix and compensate its live suffix."""
+    if plan.hessian_inverse is None:
+        raise ValueError("Wanda prefix OBS stage requires a Hessian inverse")
+
+    weight = _weight_matrix(layer)
+    rows, columns = weight.shape
+    del rows
+    plan.validate_for(columns)
+    start, end = prefix_stage_indices(columns, previous_sparsity, sparsity)
+    device = weight.device
+    permutation = plan.permutation.to(device)
+    inverse_permutation = invert_permutation(permutation)
+    dead_columns = plan.dead_columns.to(device)
+
+    weight[:, dead_columns] = 0
+    ordered_weight = weight[:, permutation]
+    ordered_hessian_inverse = plan.hessian_inverse.to(
+        device=device,
+        dtype=torch.float32,
+    )[permutation][:, permutation]
+    removed_weight = ordered_weight[:, start:end].clone()
+
+    if end < columns and start < end:
+        coupling = torch.linalg.solve(
+            ordered_hessian_inverse[start:end, start:end],
+            ordered_hessian_inverse[start:end, end:],
+        )
+        ordered_weight[:, end:] -= removed_weight.matmul(coupling)
+    ordered_weight[:, start:end] = 0
+
+    weight = ordered_weight[:, inverse_permutation]
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    if isinstance(layer, transformers.Conv1D):
+        weight = weight.t()
+    layer.weight.data = weight.reshape(layer.weight.shape).to(layer.weight.data.dtype)
+
+
+@torch.no_grad()
+def apply_dynamic_wanda_sparsegpt_stage(
+    layer: nn.Module,
+    plan: ElasticSparseGPTPlan,
+    sparsity: float,
+    previous_sparsity: float = 0.0,
+) -> ElasticSparseGPTPlan:
+    """Process one new block after Wanda-reordering only the unprocessed tail."""
+    if not 0.0 <= previous_sparsity < sparsity <= MAX_SPARSITY:
+        raise ValueError("stage sparsities must satisfy 0 <= previous < current <= max")
+    if plan.activation_norms is None or plan.hessian_inverse is None:
+        raise ValueError("dynamic Wanda stage requires retained plan statistics")
+
+    weight = _weight_matrix(layer)
+    rows, columns = weight.shape
+    plan.validate_for(columns)
+    device = weight.device
+    dead_columns = plan.dead_columns.to(device)
+    processed_columns = (
+        torch.zeros(columns, dtype=torch.bool, device=device)
+        if plan.processed_columns is None
+        else plan.processed_columns.to(device)
+    )
+    weight[:, dead_columns] = 0
+    segments = iter_stage_segments(
+        columns,
+        previous_sparsity,
+        sparsity,
+        blocksize=1,
+    )
+    if len(segments) != 1:
+        raise ValueError("dynamic Wanda stages must advance one checkpoint at a time")
+    block_start, block_end = segments[0]
+    block_columns = block_end - block_start
+    unprocessed_columns = ~processed_columns & ~dead_columns
+    if int(unprocessed_columns.sum()) < block_columns:
+        raise ValueError("not enough unprocessed columns for the next dynamic block")
+
+    active_indices = torch.where(unprocessed_columns)[0]
+    activation_norms = plan.activation_norms.to(device)[active_indices]
+    local_permutation = column_permutation(
+        weight[:, active_indices],
+        ordering="wanda",
+        activation_norms=activation_norms,
+    )
+    ordered_indices = active_indices[local_permutation]
+    current_indices = ordered_indices[:block_columns]
+    tail_indices = ordered_indices[block_columns:]
+    ordered_weight = weight[:, ordered_indices].clone()
+    hessian_inverse = plan.hessian_inverse.to(device=device, dtype=torch.float32)
+    factor = torch.linalg.cholesky(
+        hessian_inverse[ordered_indices][:, ordered_indices],
+        upper=True,
+    )
+    block_weight = ordered_weight[:, :block_columns].clone()
+    block_factor = factor[:block_columns, :block_columns]
+    target_budget = round(sparsity * rows * columns) - round(
+        previous_sparsity * rows * columns
+    )
+    block_mask = build_block_mask(
+        block_weight.square()
+        / torch.diag(block_factor).reshape(1, -1).square(),
+        budget=target_budget,
+    )
+    quantized = torch.zeros_like(block_weight)
+    errors = torch.zeros_like(block_weight)
+    for column in range(block_columns):
+        current_weight = block_weight[:, column]
+        diagonal = block_factor[column, column]
+        pruned_weight = current_weight.clone()
+        pruned_weight[block_mask[:, column]] = 0
+        quantized[:, column] = pruned_weight
+        error = (current_weight - pruned_weight) / diagonal
+        block_weight[:, column:] -= error.unsqueeze(1).matmul(
+            block_factor[column, column:].unsqueeze(0)
+        )
+        errors[:, column] = error
+
+    weight[:, current_indices] = quantized
+    if tail_indices.numel():
+        weight[:, tail_indices] -= errors.matmul(factor[:block_columns, block_columns:])
+    processed_columns[current_indices] = True
+    if isinstance(layer, transformers.Conv1D):
+        weight = weight.t()
+    layer.weight.data = weight.reshape(layer.weight.shape).to(layer.weight.data.dtype)
+    return ElasticSparseGPTPlan(
+        permutation=plan.permutation,
+        hessian_factor=plan.hessian_factor,
+        dead_columns=plan.dead_columns,
+        activation_norms=plan.activation_norms,
+        hessian_inverse=plan.hessian_inverse,
+        processed_columns=processed_columns,
+    ).cpu()
+
+
 class ElasticSparseGPT(SparseGPT):
     """SparseGPT with full-layer reordering and staged prefix pruning."""
 
@@ -283,6 +456,8 @@ class ElasticSparseGPT(SparseGPT):
         permutation: torch.Tensor | None = None,
         ordering: str = "sparsegpt",
         timings: dict[str, float] | None = None,
+        retain_dynamic_wanda_statistics: bool = False,
+        retain_hessian_inverse: bool = False,
     ) -> ElasticSparseGPTPlan:
         """Consume the collected Hessian and return a reusable CPU plan."""
         def start_timing():
@@ -325,7 +500,13 @@ class ElasticSparseGPT(SparseGPT):
                 upper=True,
             )
         finish_timing("hessian_factorization_seconds", factorization_start)
-        if permutation is None:
+        hessian_factor = None
+        if retain_dynamic_wanda_statistics:
+            permutation = torch.arange(self.columns, device=self.dev)
+            if timings is not None:
+                timings.setdefault("column_ordering_seconds", 0.0)
+                timings.setdefault("reordered_factor_seconds", 0.0)
+        elif permutation is None:
             ordering_start = start_timing()
             permutation = column_permutation(
                 weight,
@@ -339,18 +520,33 @@ class ElasticSparseGPT(SparseGPT):
             if timings is not None:
                 timings.setdefault("column_ordering_seconds", 0.0)
 
-        reordered_factor_start = start_timing()
-        permuted_inverse = hessian_inverse[permutation][:, permutation]
-        hessian_factor = torch.linalg.cholesky(
-            permuted_inverse,
-            upper=True,
-        )
+        if not retain_dynamic_wanda_statistics and not retain_hessian_inverse:
+            reordered_factor_start = start_timing()
+            permuted_inverse = hessian_inverse[permutation][:, permutation]
+            hessian_factor = torch.linalg.cholesky(
+                permuted_inverse,
+                upper=True,
+            )
         plan = ElasticSparseGPTPlan(
             permutation=permutation,
             hessian_factor=hessian_factor,
             dead_columns=dead_columns,
+            activation_norms=(activation_norms if retain_dynamic_wanda_statistics else None),
+            hessian_inverse=(
+                hessian_inverse
+                if retain_dynamic_wanda_statistics or retain_hessian_inverse
+                else None
+            ),
+            processed_columns=(
+                torch.zeros(self.columns, dtype=torch.bool, device=self.dev)
+                if retain_dynamic_wanda_statistics
+                else None
+            ),
         ).cpu()
-        finish_timing("reordered_factor_seconds", reordered_factor_start)
+        if not retain_dynamic_wanda_statistics and not retain_hessian_inverse:
+            finish_timing("reordered_factor_seconds", reordered_factor_start)
+        elif timings is not None:
+            timings.setdefault("reordered_factor_seconds", 0.0)
         return plan
 
     def fasterprune(
