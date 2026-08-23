@@ -127,7 +127,9 @@ def column_permutation(
     ordering: str = "sparsegpt",
     activation_norms: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Rank columns by full-column SparseGPT or Wanda sensitivity."""
+    """Rank columns by full-column sensitivity, or preserve their input order."""
+    if ordering == "original":
+        return torch.arange(weight.shape[1], device=weight.device)
     if ordering == "sparsegpt":
         if hessian_factor is None:
             raise ValueError("SparseGPT ordering requires a Hessian factor")
@@ -139,7 +141,7 @@ def column_permutation(
         scores = weight.float().abs() * activation_norms.reshape(1, -1)
         return torch.argsort(scores.sum(dim=0), stable=True)
     else:
-        raise ValueError("ordering must be 'sparsegpt' or 'wanda'")
+        raise ValueError("ordering must be 'original', 'sparsegpt', or 'wanda'")
 
     column_costs = scores.sum(dim=0)
     return torch.argsort(column_costs, stable=True)
@@ -493,7 +495,7 @@ class ElasticSparseGPT(SparseGPT):
             torch.linalg.cholesky(hessian)
         )
         original_factor = None
-        if permutation is None and ordering == "sparsegpt":
+        if permutation is None and ordering in {"original", "sparsegpt"}:
             original_factor = torch.linalg.cholesky(
                 hessian_inverse,
                 upper=True,
@@ -520,12 +522,18 @@ class ElasticSparseGPT(SparseGPT):
                 timings.setdefault("column_ordering_seconds", 0.0)
 
         if not retain_dynamic_wanda_statistics:
-            reordered_factor_start = start_timing()
-            permuted_inverse = hessian_inverse[permutation][:, permutation]
-            hessian_factor = torch.linalg.cholesky(
-                permuted_inverse,
-                upper=True,
-            )
+            if ordering == "original" and original_factor is not None:
+                hessian_factor = original_factor
+                if timings is not None:
+                    timings.setdefault("reordered_factor_seconds", 0.0)
+            else:
+                reordered_factor_start = start_timing()
+                permuted_inverse = hessian_inverse[permutation][:, permutation]
+                hessian_factor = torch.linalg.cholesky(
+                    permuted_inverse,
+                    upper=True,
+                )
+                finish_timing("reordered_factor_seconds", reordered_factor_start)
         plan = ElasticSparseGPTPlan(
             permutation=permutation,
             hessian_factor=hessian_factor,
@@ -542,9 +550,7 @@ class ElasticSparseGPT(SparseGPT):
                 else None
             ),
         ).cpu()
-        if not retain_dynamic_wanda_statistics:
-            finish_timing("reordered_factor_seconds", reordered_factor_start)
-        elif timings is not None:
+        if retain_dynamic_wanda_statistics and timings is not None:
             timings.setdefault("reordered_factor_seconds", 0.0)
         return plan
 

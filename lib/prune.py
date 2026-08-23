@@ -22,6 +22,7 @@ ELASTIC_SPARSEGPT_ORDERINGS = {
     "elastic_wanda_sparsegpt": "wanda",
     "elastic_wanda_dynamic_sparsegpt": "wanda",
     "elastic_wanda_prefix_obs": "wanda",
+    "elastic_sparsegpt_prefix_obs": "original",
 }
 
 
@@ -42,8 +43,11 @@ def is_dynamic_wanda_elastic_method(method):
     return method == "elastic_wanda_dynamic_sparsegpt"
 
 
-def is_prefix_obs_wanda_elastic_method(method):
-    return method == "elastic_wanda_prefix_obs"
+def is_prefix_obs_elastic_method(method):
+    return method in {
+        "elastic_wanda_prefix_obs",
+        "elastic_sparsegpt_prefix_obs",
+    }
 
 
 def find_layers(module, layers=[nn.Linear], name=''):
@@ -561,7 +565,7 @@ def apply_elastic_sparsegpt_stage(
     sparsity,
     previous_sparsity=0.0,
     dynamic_wanda=False,
-    wanda_prefix_obs=False,
+    prefix_obs=False,
 ):
     validate_elastic_sparsegpt_stages([sparsity])
     if not 0.0 <= previous_sparsity < sparsity:
@@ -586,7 +590,7 @@ def apply_elastic_sparsegpt_stage(
                     sparsity,
                     previous_sparsity=previous_sparsity,
                 )
-            elif wanda_prefix_obs:
+            elif prefix_obs:
                 apply_wanda_prefix_obs_stage(
                     target_layer,
                     plans[name],
@@ -635,6 +639,7 @@ def prune_elastic_sparsegpt(
             sparsity,
             previous_sparsity=previous_sparsity,
             dynamic_wanda=is_dynamic_wanda_elastic_method(args.prune_method),
+            prefix_obs=is_prefix_obs_elastic_method(args.prune_method),
         )
         permutations = {}
         for layer_index in range(len(model.model.layers)):

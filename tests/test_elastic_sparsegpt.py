@@ -921,6 +921,14 @@ class CliExposureTests(unittest.TestCase):
             "wanda",
         )
 
+    def test_prefix_obs_sparsegpt_method_keeps_original_column_order(self):
+        from lib.prune import elastic_ordering_for_method
+
+        self.assertEqual(
+            elastic_ordering_for_method("elastic_sparsegpt_prefix_obs"),
+            "original",
+        )
+
     def test_parser_accepts_wanda_prefix_obs_method(self):
         from main import build_parser
 
@@ -929,6 +937,15 @@ class CliExposureTests(unittest.TestCase):
         )
 
         self.assertEqual(args.prune_method, "elastic_wanda_prefix_obs")
+
+    def test_parser_accepts_original_order_prefix_obs_method(self):
+        from main import build_parser
+
+        args = build_parser().parse_args(
+            ["--prune_method", "elastic_sparsegpt_prefix_obs"]
+        )
+
+        self.assertEqual(args.prune_method, "elastic_sparsegpt_prefix_obs")
 
     def test_rejects_unknown_elastic_method_when_selecting_ordering(self):
         from lib.prune import elastic_ordering_for_method

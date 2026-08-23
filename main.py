@@ -10,7 +10,7 @@ from lib.prune import (
     apply_elastic_sparsegpt_stage,
     check_sparsity,
     is_dynamic_wanda_elastic_method,
-    is_prefix_obs_wanda_elastic_method,
+    is_prefix_obs_elastic_method,
     is_elastic_sparsegpt_method,
     find_layers,
     prepare_elastic_sparsegpt,
@@ -80,7 +80,7 @@ def build_parser():
         help='Print a synchronized breakdown of elastic preparation time.',
     )
     parser.add_argument("--sparsity_type", type=str, choices=["unstructured", "4:8", "2:4"])
-    parser.add_argument("--prune_method", type=str, choices=["magnitude", "wanda", "sparsegpt", "elastic_sparsegpt", "elastic_wanda_sparsegpt", "elastic_wanda_dynamic_sparsegpt", "elastic_wanda_prefix_obs",
+    parser.add_argument("--prune_method", type=str, choices=["magnitude", "wanda", "sparsegpt", "elastic_sparsegpt", "elastic_wanda_sparsegpt", "elastic_wanda_dynamic_sparsegpt", "elastic_wanda_prefix_obs", "elastic_sparsegpt_prefix_obs",
                         "ablate_mag_seq", "ablate_wanda_seq", "ablate_mag_iter", "ablate_wanda_iter", "search"])
     parser.add_argument("--cache_dir", default="llm_weights", type=str )
     parser.add_argument('--use_variant', action="store_true", help="whether to use the wanda variant described in the appendix")
@@ -149,7 +149,7 @@ def main():
                 stage_sparsity,
                 previous_sparsity=previous_sparsity,
                 dynamic_wanda=is_dynamic_wanda_elastic_method(args.prune_method),
-                wanda_prefix_obs=is_prefix_obs_wanda_elastic_method(
+                prefix_obs=is_prefix_obs_elastic_method(
                     args.prune_method
                 ),
             )
