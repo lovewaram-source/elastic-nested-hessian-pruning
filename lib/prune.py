@@ -527,9 +527,6 @@ def prepare_elastic_sparsegpt(args, model, tokenizer, dev, plan_store):
                     retain_dynamic_wanda_statistics=is_dynamic_wanda_elastic_method(
                         args.prune_method
                     ),
-                    retain_hessian_inverse=is_prefix_obs_wanda_elastic_method(
-                        args.prune_method
-                    ),
                 )
                 pruner.free()
             cache_write_start = start_timing()

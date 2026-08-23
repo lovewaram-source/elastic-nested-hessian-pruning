@@ -51,7 +51,7 @@ class PrefixStageTests(unittest.TestCase):
 
 
 class WandaPrefixOBSTests(unittest.TestCase):
-    def test_prefix_obs_stage_matches_direct_group_solve_and_restores_coordinates(self):
+    def test_prefix_obs_stage_matches_sequential_cholesky_updates_and_restores_coordinates(self):
         from lib.elastic_sparsegpt import (
             ElasticSparseGPTPlan,
             apply_wanda_prefix_obs_stage,
@@ -65,21 +65,24 @@ class WandaPrefixOBSTests(unittest.TestCase):
         hessian_inverse = torch.eye(10)
         hessian_inverse[0, 2] = hessian_inverse[2, 0] = 0.1
         hessian_inverse[1, 2] = hessian_inverse[2, 1] = 0.2
-        plan = ElasticSparseGPTPlan(
-            permutation=permutation,
-            hessian_factor=None,
-            dead_columns=torch.zeros(10, dtype=torch.bool),
-            hessian_inverse=hessian_inverse,
-        )
-
         ordered_before = layer.weight.detach().clone()[:, permutation]
         ordered_hessian_inverse = hessian_inverse[permutation][:, permutation]
-        expected = ordered_before.clone()
-        expected[:, 2:] -= ordered_before[:, :2] @ torch.linalg.solve(
-            ordered_hessian_inverse[:2, :2],
-            ordered_hessian_inverse[:2, 2:],
+        hessian_factor = torch.linalg.cholesky(
+            ordered_hessian_inverse,
+            upper=True,
         )
-        expected[:, :2] = 0
+        plan = ElasticSparseGPTPlan(
+            permutation=permutation,
+            hessian_factor=hessian_factor,
+            dead_columns=torch.zeros(10, dtype=torch.bool),
+        )
+        expected = ordered_before.clone()
+        for column in range(2):
+            error = expected[:, column] / hessian_factor[column, column]
+            expected[:, column:] -= error.unsqueeze(1).matmul(
+                hessian_factor[column, column:].unsqueeze(0)
+            )
+            expected[:, column] = 0
 
         apply_wanda_prefix_obs_stage(layer, plan, sparsity=0.2)
 
@@ -97,9 +100,8 @@ class WandaPrefixOBSTests(unittest.TestCase):
         permutation = torch.tensor([3, 7, 0, 1, 2, 4, 5, 6, 8, 9])
         plan = ElasticSparseGPTPlan(
             permutation=permutation,
-            hessian_factor=None,
+            hessian_factor=torch.eye(10),
             dead_columns=torch.zeros(10, dtype=torch.bool),
-            hessian_inverse=torch.eye(10),
         )
 
         apply_wanda_prefix_obs_stage(layer, plan, sparsity=0.2)

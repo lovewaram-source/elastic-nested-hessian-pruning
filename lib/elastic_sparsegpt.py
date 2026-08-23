@@ -314,9 +314,9 @@ def apply_wanda_prefix_obs_stage(
     sparsity: float,
     previous_sparsity: float = 0.0,
 ) -> None:
-    """Delete a fixed Wanda-ordered prefix and compensate its live suffix."""
-    if plan.hessian_inverse is None:
-        raise ValueError("Wanda prefix OBS stage requires a Hessian inverse")
+    """Prune the next fixed Wanda-ordered prefix one column at a time."""
+    if plan.hessian_factor is None:
+        raise ValueError("Wanda prefix OBS stage requires a Hessian factor")
 
     weight = _weight_matrix(layer)
     rows, columns = weight.shape
@@ -330,19 +330,19 @@ def apply_wanda_prefix_obs_stage(
 
     weight[:, dead_columns] = 0
     ordered_weight = weight[:, permutation]
-    ordered_hessian_inverse = plan.hessian_inverse.to(
+    hessian_factor = plan.hessian_factor.to(
         device=device,
         dtype=torch.float32,
-    )[permutation][:, permutation]
-    removed_weight = ordered_weight[:, start:end].clone()
+    )
 
-    if end < columns and start < end:
-        coupling = torch.linalg.solve(
-            ordered_hessian_inverse[start:end, start:end],
-            ordered_hessian_inverse[start:end, end:],
+    for column in range(start, end):
+        current_weight = ordered_weight[:, column].clone()
+        diagonal = hessian_factor[column, column]
+        error = current_weight / diagonal
+        ordered_weight[:, column:] -= error.unsqueeze(1).matmul(
+            hessian_factor[column, column:].unsqueeze(0)
         )
-        ordered_weight[:, end:] -= removed_weight.matmul(coupling)
-    ordered_weight[:, start:end] = 0
+        ordered_weight[:, column] = 0
 
     weight = ordered_weight[:, inverse_permutation]
     if device.type == "cuda":
@@ -457,7 +457,6 @@ class ElasticSparseGPT(SparseGPT):
         ordering: str = "sparsegpt",
         timings: dict[str, float] | None = None,
         retain_dynamic_wanda_statistics: bool = False,
-        retain_hessian_inverse: bool = False,
     ) -> ElasticSparseGPTPlan:
         """Consume the collected Hessian and return a reusable CPU plan."""
         def start_timing():
@@ -520,7 +519,7 @@ class ElasticSparseGPT(SparseGPT):
             if timings is not None:
                 timings.setdefault("column_ordering_seconds", 0.0)
 
-        if not retain_dynamic_wanda_statistics and not retain_hessian_inverse:
+        if not retain_dynamic_wanda_statistics:
             reordered_factor_start = start_timing()
             permuted_inverse = hessian_inverse[permutation][:, permutation]
             hessian_factor = torch.linalg.cholesky(
@@ -534,7 +533,7 @@ class ElasticSparseGPT(SparseGPT):
             activation_norms=(activation_norms if retain_dynamic_wanda_statistics else None),
             hessian_inverse=(
                 hessian_inverse
-                if retain_dynamic_wanda_statistics or retain_hessian_inverse
+                if retain_dynamic_wanda_statistics
                 else None
             ),
             processed_columns=(
@@ -543,7 +542,7 @@ class ElasticSparseGPT(SparseGPT):
                 else None
             ),
         ).cpu()
-        if not retain_dynamic_wanda_statistics and not retain_hessian_inverse:
+        if not retain_dynamic_wanda_statistics:
             finish_timing("reordered_factor_seconds", reordered_factor_start)
         elif timings is not None:
             timings.setdefault("reordered_factor_seconds", 0.0)
