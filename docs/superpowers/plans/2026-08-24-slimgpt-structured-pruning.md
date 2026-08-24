@@ -49,7 +49,7 @@
 
 - [ ] Write tests that assert the log profile is increasing, the calibrated discrete schedule matches a global parameter target, attention projections retain coupled head rows/columns, FFN projections retain coupled neuron rows/columns, module attributes update, and GQA raises `ValueError`.
 - [ ] Run `python -m unittest -v tests.test_slimgpt.StructuralSlicingTests tests.test_slimgpt.RatioScheduleTests` and confirm failures are due to missing APIs.
-- [ ] Implement Linear slicing while preserving dtype, device, and bias; update attention `num_heads` and `num_key_value_heads` without changing the residual-stream `hidden_size`, and update MLP `intermediate_size` where present.
+- [ ] Implement Linear slicing while preserving dtype, device, and bias; update attention head counts and the legacy module-local concatenated-head width without changing projection input or residual-stream widths, and update MLP `intermediate_size` where present.
 - [ ] Run the focused tests and confirm they pass.
 
 ### Task 3: Greedy head and dynamic-batch FFN selection

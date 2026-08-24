@@ -28,7 +28,7 @@ FFN candidates are individual intermediate channels. Recompute single-channel OB
 
 The default profile is logarithmically increasing with depth. Let `shape_i = log(i + 1) / log(n)` and use it to define the relative pruning pressure across layers. A scalar multiplier is found by binary search so the predicted number of physically removed parameters, including the discrete head and FFN channel counts, matches the requested reduction of the complete model as closely as possible. Clamp each layer ratio so at least one attention head and one FFN channel survive. A `uniform` profile is exposed as an ablation.
 
-Pruning attention heads changes the output widths of `q_proj`, `k_proj`, and `v_proj` and the input width of `o_proj`. The residual-stream hidden size, projection input width, and `o_proj` output width remain unchanged.
+Pruning attention heads changes the output widths of `q_proj`, `k_proj`, and `v_proj` and the input width of `o_proj`. The residual-stream width, projection input width, and `o_proj` output width remain unchanged. For Transformers versions that use `attention.hidden_size` to reshape the concatenated head tensor, that module-local attribute is set to `kept_heads * head_dim`; it does not represent or alter the residual-stream width.
 
 ## CLI and Results
 

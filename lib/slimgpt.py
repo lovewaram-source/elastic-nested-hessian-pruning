@@ -105,6 +105,10 @@ def slice_llama_attention(attention, kept_heads, compensated_o_weight=None):
     if hasattr(attention, "num_key_value_heads"):
         attention.num_key_value_heads = int(kept_heads.numel())
     attention.num_key_value_groups = 1
+    # Transformers <= 4.40 uses this module attribute only when reshaping the
+    # concatenated head output before o_proj.  It is not the residual-stream
+    # width and does not change q/k/v input features or o_proj output features.
+    attention.hidden_size = int(kept_heads.numel()) * attention.head_dim
 
 
 def slice_llama_mlp(mlp, kept_channels, compensated_down_weight=None):
