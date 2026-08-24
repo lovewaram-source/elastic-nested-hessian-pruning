@@ -21,10 +21,14 @@ def _complement(size, indices, device):
     return torch.arange(size, device=device)[mask]
 
 
+def _submatrix(matrix, rows, columns):
+    return matrix[rows[:, None], columns[None, :]]
+
+
 def obs_group_loss(weight, hessian_inverse, indices):
     """Return the exact quadratic OBS loss for removing column ``indices``."""
     indices = _index_tensor(indices, hessian_inverse.device)
-    block = hessian_inverse.index_select(0, indices).index_select(1, indices)
+    block = _submatrix(hessian_inverse, indices, indices)
     selected = weight.index_select(1, indices).float()
     solution = torch.linalg.solve(block.float(), selected.T).T
     return torch.sum(selected * solution)
@@ -34,14 +38,21 @@ def remove_obs_group(weight, hessian_inverse, indices):
     """Compensate a removed column group and return survivor coordinates."""
     indices = _index_tensor(indices, hessian_inverse.device)
     survivors = _complement(hessian_inverse.shape[0], indices, hessian_inverse.device)
-    block = hessian_inverse.index_select(0, indices).index_select(1, indices).float()
+    block = _submatrix(hessian_inverse, indices, indices).float()
     selected = weight.index_select(1, indices).float()
     coefficients = torch.linalg.solve(block, selected.T).T
-    compensated = weight.float() - coefficients @ hessian_inverse.index_select(0, indices).float()
-    cross_sg = hessian_inverse.index_select(0, survivors).index_select(1, indices).float()
-    cross_gs = hessian_inverse.index_select(0, indices).index_select(1, survivors).float()
-    survivor_hinv = hessian_inverse.index_select(0, survivors).index_select(1, survivors).float()
-    survivor_hinv = survivor_hinv - cross_sg @ torch.linalg.solve(block, cross_gs)
+    compensated = weight.float().clone()
+    compensated.addmm_(
+        coefficients,
+        hessian_inverse.index_select(0, indices).float(),
+        alpha=-1,
+    )
+    del coefficients, selected
+    cross_sg = _submatrix(hessian_inverse, survivors, indices).float()
+    cross_gs = _submatrix(hessian_inverse, indices, survivors).float()
+    solved_cross = torch.linalg.solve(block, cross_gs)
+    survivor_hinv = _submatrix(hessian_inverse, survivors, survivors).float()
+    survivor_hinv.addmm_(cross_sg, solved_cross, alpha=-1)
     return (
         compensated.index_select(1, survivors).to(weight.dtype),
         survivor_hinv.to(hessian_inverse.dtype),
