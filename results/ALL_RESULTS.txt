@@ -46,3 +46,4 @@ wanda-prefix-column  prefix-obs-wanda   0.5000->0.6000   0.6001    1764.6683    
 wanda-prefix-column  prefix-obs-wanda   0.6000->0.7000   0.7000    3535.1340    353.07      67.42     918.01
 wanda-prefix-column  prefix-obs-wanda   0.7000->0.8000   0.8000   15341.1377    353.07      67.29     985.30
 structured-baseline  slimgpt            ->0.2000         0.2000       7.5945         -     304.26     304.26
+structured-fixed128  slimgpt-fixed128   ->0.2000           0.2000       7.5024         -     304.59     304.59
