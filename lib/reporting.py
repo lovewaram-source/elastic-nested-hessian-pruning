@@ -12,6 +12,24 @@ def format_result_log(
     )
 
 
+def format_slimgpt_result_log(
+    model_name,
+    target_ratio,
+    actual_parameter_reduction,
+    perplexity,
+    pruning_time_seconds,
+    original_parameters,
+    remaining_parameters,
+):
+    return (
+        "model\tmethod\ttarget_parameter_reduction\tactual_parameter_reduction\t"
+        "ppl_test\tpruning_time_seconds\toriginal_parameters\tremaining_parameters\n"
+        f"{model_name}\tslimgpt\t{target_ratio:.4f}\t{actual_parameter_reduction:.4f}\t"
+        f"{perplexity:.4f}\t{pruning_time_seconds:.2f}\t{original_parameters}\t"
+        f"{remaining_parameters}\n"
+    )
+
+
 def format_elastic_result_log(
     model_name,
     method,

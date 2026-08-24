@@ -4,6 +4,24 @@ from lib.reporting import format_result_log
 
 
 class ResultLogFormattingTests(unittest.TestCase):
+    def test_slimgpt_result_reports_physical_parameter_reduction(self):
+        from lib.reporting import format_slimgpt_result_log
+
+        result = format_slimgpt_result_log(
+            model_name="Llama-2-7b-hf",
+            target_ratio=0.2,
+            actual_parameter_reduction=0.198,
+            perplexity=6.1,
+            pruning_time_seconds=123.0,
+            original_parameters=1000,
+            remaining_parameters=802,
+        )
+        header, values = result.strip().splitlines()
+        self.assertIn("actual_parameter_reduction", header)
+        self.assertIn("remaining_parameters", header)
+        self.assertIn("slimgpt", values)
+        self.assertIn("0.1980", values)
+
     def test_elastic_result_log_identifies_the_pruning_stage(self):
         from lib.reporting import format_elastic_result_log
 

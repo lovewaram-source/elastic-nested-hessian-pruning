@@ -18,13 +18,18 @@ from lib.prune import (
     prune_elastic_sparsegpt,
     prune_magnitude,
     prune_sparsegpt,
+    prune_slimgpt,
     prune_wanda,
     run_prepared_elastic_stages,
     validate_elastic_sparsegpt_stages,
 )
 from lib.elastic_plan_store import make_elastic_plan_store
 from lib.eval import eval_ppl, eval_zero_shot
-from lib.reporting import format_elastic_result_log, format_result_log
+from lib.reporting import (
+    format_elastic_result_log,
+    format_result_log,
+    format_slimgpt_result_log,
+)
 
 print('torch', version('torch'))
 print('transformers', version('transformers'))
@@ -80,8 +85,20 @@ def build_parser():
         help='Print a synchronized breakdown of elastic preparation time.',
     )
     parser.add_argument("--sparsity_type", type=str, choices=["unstructured", "4:8", "2:4"])
-    parser.add_argument("--prune_method", type=str, choices=["magnitude", "wanda", "sparsegpt", "elastic_sparsegpt", "elastic_wanda_sparsegpt", "elastic_wanda_dynamic_sparsegpt", "elastic_wanda_prefix_obs", "elastic_sparsegpt_prefix_obs",
+    parser.add_argument("--prune_method", type=str, choices=["magnitude", "wanda", "sparsegpt", "slimgpt", "elastic_sparsegpt", "elastic_wanda_sparsegpt", "elastic_wanda_dynamic_sparsegpt", "elastic_wanda_prefix_obs", "elastic_sparsegpt_prefix_obs",
                         "ablate_mag_seq", "ablate_wanda_seq", "ablate_mag_iter", "ablate_wanda_iter", "search"])
+    parser.add_argument(
+        "--slimgpt_ratio_profile",
+        choices=["log_increase", "uniform"],
+        default="log_increase",
+        help="Layer-wise structural pruning profile used only by SlimGPT.",
+    )
+    parser.add_argument(
+        "--slimgpt_ffn_min_group_size",
+        type=int,
+        default=8,
+        help="Smallest dynamic FFN OBS selection batch used only by SlimGPT.",
+    )
     parser.add_argument("--cache_dir", default="llm_weights", type=str )
     parser.add_argument('--use_variant', action="store_true", help="whether to use the wanda variant described in the appendix")
     parser.add_argument('--save', type=str, default=None, help='Path to save results.')
@@ -219,6 +236,7 @@ def main():
         return
 
     pruning_time_seconds = 0.0
+    structured_metadata = None
     if args.sparsity_ratio != 0:
         print("pruning starts")
         pruning_start = time.perf_counter()
@@ -228,6 +246,10 @@ def main():
             prune_magnitude(args, model, tokenizer, device, prune_n=prune_n, prune_m=prune_m)
         elif args.prune_method == "sparsegpt":
             prune_sparsegpt(args, model, tokenizer, device, prune_n=prune_n, prune_m=prune_m)
+        elif args.prune_method == "slimgpt":
+            if prune_n != 0 or prune_m != 0:
+                raise ValueError("SlimGPT does not use N:M sparsity")
+            structured_metadata = prune_slimgpt(args, model, tokenizer, device)
         elif is_elastic_sparsegpt_method(args.prune_method):
             prune_elastic_sparsegpt(
                 args,
@@ -244,8 +266,12 @@ def main():
 
     ################################################################
     print("*"*30)
-    sparsity_ratio = check_sparsity(model)
-    print(f"sparsity sanity check {sparsity_ratio:.4f}")
+    if structured_metadata is None:
+        sparsity_ratio = check_sparsity(model)
+        print(f"sparsity sanity check {sparsity_ratio:.4f}")
+    else:
+        sparsity_ratio = structured_metadata["actual_parameter_reduction"]
+        print(f"physical parameter reduction {sparsity_ratio:.4f}")
     print("*"*30)
     ################################################################
     ppl_test = eval_ppl(args, model, tokenizer, device)
@@ -255,15 +281,25 @@ def main():
         os.makedirs(args.save)
     save_filepath = os.path.join(args.save, f"log_{args.prune_method}.txt")
     with open(save_filepath, "w") as f:
-        f.write(
-            format_result_log(
+        if structured_metadata is None:
+            result_log = format_result_log(
                 model_name=model_name,
                 method=args.prune_method,
                 sparsity_ratio=sparsity_ratio,
                 perplexity=ppl_test,
                 pruning_time_seconds=pruning_time_seconds,
             )
-        )
+        else:
+            result_log = format_slimgpt_result_log(
+                model_name=model_name,
+                target_ratio=args.sparsity_ratio,
+                actual_parameter_reduction=sparsity_ratio,
+                perplexity=ppl_test,
+                pruning_time_seconds=pruning_time_seconds,
+                original_parameters=structured_metadata["original_parameters"],
+                remaining_parameters=structured_metadata["remaining_parameters"],
+            )
+        f.write(result_log)
 
     if args.eval_zero_shot:
         accelerate=False

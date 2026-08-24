@@ -49,7 +49,7 @@ python main.py \
 We provide a quick overview of the arguments:  
 - `--model`: The identifier for the LLaMA model on the Hugging Face model hub.
 - `--cache_dir`: Directory for loading or storing LLM weights. The default is `llm_weights`.
-- `--prune_method`: Base methods are [`magnitude`, `wanda`, `sparsegpt`]; elastic variants are [`elastic_sparsegpt`, `elastic_wanda_sparsegpt`].
+- `--prune_method`: Base methods are [`magnitude`, `wanda`, `sparsegpt`], the paper-derived physical structured baseline is `slimgpt`, and elastic variants include [`elastic_sparsegpt`, `elastic_wanda_sparsegpt`].
 - `--sparsity_ratio`: Denotes the percentage of weights to be pruned.
 - `--sparsity_type`: Specifies the type of sparsity [`unstructured`, `2:4`, `4:8`].
 - `--use_variant`: Whether to use the Wanda variant, default is `False`. 
@@ -101,6 +101,23 @@ python main.py \
   --nsamples 128 \
   --seed 0 \
   --save results/elastic-prefix-disk
+```
+
+### Paper-derived SlimGPT structured baseline
+
+`slimgpt` physically removes complete attention heads and coupled FFN channels. It uses OBS compensation, grouped head scoring, dynamic FFN selection batches, and a logarithmically increasing layer profile. This repository implementation is derived from the paper; it is not an official SlimGPT code release. The requested ratio refers to the reduction of the complete model parameter count, and the result log records the realized reduction after discrete head/channel slicing.
+
+```sh
+python main.py \
+  --model <MODEL_PATH> \
+  --prune_method slimgpt \
+  --sparsity_type unstructured \
+  --sparsity_ratio 0.2 \
+  --slimgpt_ratio_profile log_increase \
+  --slimgpt_ffn_min_group_size 8 \
+  --nsamples 128 \
+  --seed 0 \
+  --save results/slimgpt-20
 ```
 
 For example, 20% global sparsity activates the first 25% of reordered columns and prunes 80% of weights in that slice; 30% keeps the 20% mask, activates the next 12.5% of columns, and prunes 80% only in that new slice. This avoids full-column deletion. The commands above write `s02` through `s08` below the selected result directory.

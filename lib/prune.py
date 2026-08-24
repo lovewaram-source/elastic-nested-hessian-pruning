@@ -13,6 +13,13 @@ from .elastic_sparsegpt import (
 from .elastic_plan_store import MemoryElasticPlanStore
 from .layerwrapper import WrappedGPT
 from .data import get_loaders 
+from .slimgpt import (
+    attention_head_counts,
+    calibrate_structural_ratios,
+    damped_hessian_inverse,
+    prune_attention_with_obs,
+    prune_mlp_with_obs,
+)
 
 from .ablate import AblateGPT 
 
@@ -307,42 +314,226 @@ def prune_sparsegpt(args, model, tokenizer, dev, prune_n=0, prune_m=0):
             inps, outs, attention_mask, position_ids = inps.to(dev), outs.to(dev), attention_mask.to(dev), position_ids.to(dev)
 
         subset = find_layers(layer)
-
-        gpts = {}
-        for name in subset:
-            gpts[name] = SparseGPT(subset[name])
+        gpts = {name: SparseGPT(subset[name]) for name in subset}
 
         def add_batch(name):
             def tmp(_, inp, out):
                 gpts[name].add_batch(inp[0].data, out.data)
             return tmp
 
-        handles = []
-        for name in gpts:
-            handles.append(subset[name].register_forward_hook(add_batch(name)))
-
+        handles = [subset[name].register_forward_hook(add_batch(name)) for name in gpts]
         for j in range(args.nsamples):
             outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask, position_ids=position_ids)[0]
-        for h in handles:
-            h.remove()
+        for handle in handles:
+            handle.remove()
 
         for name in gpts:
             print(i, name)
             print('Pruning ...')
-
-            gpts[name].fasterprune(args.sparsity_ratio, prune_n=prune_n, prune_m=prune_m, percdamp=0.01, blocksize=args.sparsegpt_blocksize)
+            gpts[name].fasterprune(
+                args.sparsity_ratio,
+                prune_n=prune_n,
+                prune_m=prune_m,
+                percdamp=0.01,
+                blocksize=args.sparsegpt_blocksize,
+            )
             gpts[name].free()
 
         for j in range(args.nsamples):
             outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask, position_ids=position_ids)[0]
-
-        layers[i] = layer 
+        layers[i] = layer
         torch.cuda.empty_cache()
-
         inps, outs = outs, inps
 
     model.config.use_cache = use_cache
     torch.cuda.empty_cache()
+
+
+def _slimgpt_layer_forward(layer, inp, attention_mask, position_ids):
+    kwargs = {}
+    if attention_mask is not None:
+        kwargs["attention_mask"] = attention_mask
+    if position_ids is not None:
+        kwargs["position_ids"] = position_ids
+    return layer(inp, **kwargs)[0]
+
+
+@torch.no_grad()
+def _collect_slimgpt_hessian(layer, projection, inps, attention_mask, position_ids):
+    pruner = SparseGPT(projection)
+
+    def add_batch(_, inp, out):
+        pruner.add_batch(inp[0].data, out.data)
+
+    handle = projection.register_forward_hook(add_batch)
+    try:
+        for sample_index in range(inps.shape[0]):
+            _slimgpt_layer_forward(
+                layer,
+                inps[sample_index].unsqueeze(0),
+                attention_mask,
+                position_ids,
+            )
+    finally:
+        handle.remove()
+    inverse = damped_hessian_inverse(pruner.H, percdamp=0.01)
+    pruner.free()
+    return inverse
+
+
+@torch.no_grad()
+def prune_slimgpt(args, model, tokenizer, dev):
+    """Paper-derived physical SlimGPT pruning for standard LLaMA MHA blocks."""
+    if not 0 < args.sparsity_ratio < 1:
+        raise ValueError("SlimGPT requires a target parameter reduction in (0, 1)")
+    if args.slimgpt_ffn_min_group_size <= 0:
+        raise ValueError("slimgpt_ffn_min_group_size must be positive")
+
+    original_parameters = sum(parameter.numel() for parameter in model.parameters())
+    ratios = calibrate_structural_ratios(
+        model,
+        args.sparsity_ratio,
+        args.slimgpt_ratio_profile,
+    )
+    predicted = sum(
+        1 for ratio in ratios if ratio > 0
+    )
+    print(
+        f"SlimGPT profile {args.slimgpt_ratio_profile}; "
+        f"pruning {predicted}/{len(ratios)} decoder layers"
+    )
+
+    dataloader, _ = get_loaders(
+        "c4",
+        nsamples=args.nsamples,
+        seed=args.seed,
+        seqlen=model.seqlen,
+        tokenizer=tokenizer,
+    )
+    use_cache = model.config.use_cache
+    model.config.use_cache = False
+    layers = model.model.layers
+    device_map = getattr(model, "hf_device_map", {})
+    if "model.embed_tokens" in device_map:
+        dev = device_map["model.embed_tokens"]
+
+    dtype = next(iter(model.parameters())).dtype
+    inps = torch.zeros(
+        (args.nsamples, model.seqlen, model.config.hidden_size),
+        dtype=dtype,
+        device=dev,
+    )
+    cache = {"i": 0, "attention_mask": None, "position_ids": None}
+
+    class Catcher(nn.Module):
+        def __init__(self, module):
+            super().__init__()
+            self.module = module
+
+        def forward(self, inp, **kwargs):
+            inps[cache["i"]] = inp
+            cache["i"] += 1
+            cache["attention_mask"] = kwargs.get("attention_mask")
+            cache["position_ids"] = kwargs.get("position_ids")
+            raise ValueError
+
+    original_first_layer = layers[0]
+    layers[0] = Catcher(original_first_layer)
+    try:
+        for batch in dataloader:
+            try:
+                model(batch[0].to(dev))
+            except ValueError:
+                pass
+    finally:
+        layers[0] = original_first_layer
+
+    outs = torch.zeros_like(inps)
+    attention_mask = cache["attention_mask"]
+    position_ids = cache["position_ids"]
+    try:
+        for layer_index, (layer, ratio) in enumerate(zip(layers, ratios)):
+            layer_device_key = f"model.layers.{layer_index}"
+            if layer_device_key in device_map:
+                dev = device_map[layer_device_key]
+                inps = inps.to(dev)
+                outs = outs.to(dev)
+                if attention_mask is not None:
+                    attention_mask = attention_mask.to(dev)
+                if position_ids is not None:
+                    position_ids = position_ids.to(dev)
+
+            attention = layer.self_attn
+            mlp = layer.mlp
+            num_heads, _ = attention_head_counts(attention)
+            heads_to_remove = min(
+                num_heads - 1,
+                int(num_heads * ratio),
+            )
+            channels_to_remove = min(
+                mlp.down_proj.in_features - 1,
+                int(mlp.down_proj.in_features * ratio),
+            )
+            print(
+                f"SlimGPT layer {layer_index}: ratio={ratio:.4f}, "
+                f"heads={heads_to_remove}, ffn_channels={channels_to_remove}"
+            )
+
+            if heads_to_remove:
+                attention_hinv = _collect_slimgpt_hessian(
+                    layer,
+                    attention.o_proj,
+                    inps,
+                    attention_mask,
+                    position_ids,
+                )
+                prune_attention_with_obs(attention, attention_hinv, ratio)
+                del attention_hinv
+                torch.cuda.empty_cache()
+
+            if channels_to_remove:
+                ffn_hinv = _collect_slimgpt_hessian(
+                    layer,
+                    mlp.down_proj,
+                    inps,
+                    attention_mask,
+                    position_ids,
+                )
+                prune_mlp_with_obs(
+                    mlp,
+                    ffn_hinv,
+                    ratio,
+                    min_group_size=args.slimgpt_ffn_min_group_size,
+                )
+                del ffn_hinv
+                torch.cuda.empty_cache()
+
+            for sample_index in range(args.nsamples):
+                outs[sample_index] = _slimgpt_layer_forward(
+                    layer,
+                    inps[sample_index].unsqueeze(0),
+                    attention_mask,
+                    position_ids,
+                )
+            inps, outs = outs, inps
+            torch.cuda.empty_cache()
+    finally:
+        model.config.use_cache = use_cache
+
+    remaining_parameters = sum(parameter.numel() for parameter in model.parameters())
+    actual_reduction = (original_parameters - remaining_parameters) / original_parameters
+    metadata = {
+        "target_parameter_reduction": args.sparsity_ratio,
+        "actual_parameter_reduction": actual_reduction,
+        "original_parameters": original_parameters,
+        "remaining_parameters": remaining_parameters,
+        "layer_ratios": ratios,
+    }
+    print(
+        f"SlimGPT parameters: {original_parameters} -> {remaining_parameters} "
+        f"({actual_reduction:.4%} removed)"
+    )
+    return metadata
 
 
 def validate_elastic_sparsegpt_stages(sparsities):
