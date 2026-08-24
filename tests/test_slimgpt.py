@@ -45,6 +45,33 @@ class DummyModel(nn.Module):
 
 
 class OBSGroupTests(unittest.TestCase):
+    def test_in_place_group_removal_preserves_storage_and_obs_result(self):
+        from lib.slimgpt import remove_obs_group_in_place
+
+        weight = torch.tensor([[1.0, 2.0, 3.0, 4.0], [2.0, -1.0, 1.0, 0.5]])
+        hinv = torch.tensor(
+            [[2.0, 0.2, 0.1, 0.0], [0.2, 1.5, 0.3, 0.1],
+             [0.1, 0.3, 1.8, 0.2], [0.0, 0.1, 0.2, 1.2]]
+        )
+        group = torch.tensor([1, 3])
+        survivors = torch.tensor([0, 2])
+        block = hinv[group][:, group]
+        expected_weight = weight - torch.linalg.solve(
+            block, weight[:, group].T
+        ).T @ hinv[group]
+        expected_hinv = hinv - (
+            hinv[:, group] @ torch.linalg.solve(block, hinv[group])
+        )
+        weight_storage = weight.data_ptr()
+        hinv_storage = hinv.data_ptr()
+
+        remove_obs_group_in_place(weight, hinv, group)
+
+        self.assertEqual(weight.data_ptr(), weight_storage)
+        self.assertEqual(hinv.data_ptr(), hinv_storage)
+        self.assertTrue(torch.allclose(weight[:, survivors], expected_weight[:, survivors]))
+        self.assertTrue(torch.allclose(hinv[survivors][:, survivors], expected_hinv[survivors][:, survivors]))
+
     def test_group_loss_and_compensation_match_direct_formula(self):
         from lib.slimgpt import obs_group_loss, remove_obs_group
 

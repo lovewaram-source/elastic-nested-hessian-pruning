@@ -60,6 +60,27 @@ def remove_obs_group(weight, hessian_inverse, indices):
     )
 
 
+def remove_obs_group_in_place(weight, hessian_inverse, indices):
+    """Apply an exact OBS group removal without compacting the full matrices.
+
+    The caller keeps a separate active-coordinate list.  Retaining the original
+    storage avoids simultaneously materializing the old and survivor Hessians,
+    which is prohibitive for LLaMA FFN widths.
+    """
+    indices = _index_tensor(indices, hessian_inverse.device)
+    block = _submatrix(hessian_inverse, indices, indices).float()
+
+    selected = weight.index_select(1, indices).float()
+    inverse_rows = hessian_inverse.index_select(0, indices).float()
+    coefficients = torch.linalg.solve(block, selected.T).T
+    weight.addmm_(coefficients, inverse_rows, alpha=-1)
+    del selected, coefficients
+
+    inverse_columns = hessian_inverse.index_select(1, indices).float()
+    solved_rows = torch.linalg.solve(block, inverse_rows)
+    hessian_inverse.addmm_(inverse_columns, solved_rows, alpha=-1)
+
+
 def damped_hessian_inverse(hessian, percdamp=0.01):
     """Build a numerically stable inverse Hessian from calibration statistics."""
     hessian = hessian.float().clone()
@@ -262,10 +283,10 @@ def prune_mlp_with_obs(mlp, hessian_inverse, ratio, min_group_size=8):
     if min_group_size <= 0:
         raise ValueError("min_group_size must be positive")
     original_channels = list(range(mlp.down_proj.in_features))
-    current_channels = original_channels.copy()
+    active = torch.ones(len(original_channels), dtype=torch.bool, device=hessian_inverse.device)
     weight = mlp.down_proj.weight.detach().float().clone()
-    hinv = hessian_inverse.float().clone()
-    target = min(len(current_channels) - 1, int(len(current_channels) * ratio))
+    hinv = hessian_inverse.float()
+    target = min(len(original_channels) - 1, int(len(original_channels) * ratio))
     removed = []
     while len(removed) < target:
         remaining = target - len(removed)
@@ -273,14 +294,19 @@ def prune_mlp_with_obs(mlp, hessian_inverse, ratio, min_group_size=8):
         if remaining > min_group_size:
             power = 2 ** int(math.floor(math.log2(remaining)))
             batch = min(batch, max(min_group_size, power))
-        diagonal = torch.diag(hinv).clamp_min(torch.finfo(hinv.dtype).eps)
-        losses = torch.sum(weight.float().square(), dim=0) / diagonal
-        positions = torch.topk(losses, batch, largest=False).indices.sort().values
-        removed.extend(current_channels[int(position)] for position in positions.tolist())
-        weight, hinv, survivors = remove_obs_group(weight, hinv, positions)
-        current_channels = [current_channels[int(position)] for position in survivors.tolist()]
+        active_positions = torch.where(active)[0]
+        diagonal = torch.diag(hinv).index_select(0, active_positions)
+        diagonal = diagonal.clamp_min(torch.finfo(hinv.dtype).eps)
+        losses = torch.sum(weight.index_select(1, active_positions).square(), dim=0) / diagonal
+        local_positions = torch.topk(losses, batch, largest=False).indices
+        positions = active_positions.index_select(0, local_positions).sort().values
+        removed.extend(int(position) for position in positions.tolist())
+        remove_obs_group_in_place(weight, hinv, positions)
+        active[positions] = False
+    current_channels = torch.where(active)[0].tolist()
     kept = torch.tensor(current_channels, device=mlp.gate_proj.weight.device)
-    slice_llama_mlp(mlp, kept, compensated_down_weight=weight)
+    compensated_weight = weight.index_select(1, kept.to(weight.device))
+    slice_llama_mlp(mlp, kept, compensated_down_weight=compensated_weight)
     return {
         "removed_count": len(removed),
         "removed_channels": removed,
