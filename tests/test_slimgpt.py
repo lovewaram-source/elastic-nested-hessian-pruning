@@ -206,6 +206,19 @@ class StructuredPruningTests(unittest.TestCase):
         self.assertEqual(metadata["removed_count"], 3)
         self.assertEqual(mlp.intermediate_size, 7)
 
+    def test_mlp_fixed_group_size_uses_128_until_final_remainder(self):
+        from lib.slimgpt import prune_mlp_with_obs
+
+        mlp = DummyMLP(intermediate_size=300)
+        metadata = prune_mlp_with_obs(
+            mlp,
+            torch.eye(300),
+            0.5,
+            fixed_group_size=128,
+        )
+        self.assertEqual(metadata["removed_count"], 150)
+        self.assertEqual(metadata["selection_group_sizes"], [128, 22])
+
 
 class CliExposureTests(unittest.TestCase):
     def test_parser_accepts_slimgpt_options(self):
@@ -218,6 +231,14 @@ class CliExposureTests(unittest.TestCase):
         self.assertEqual(args.prune_method, "slimgpt")
         self.assertEqual(args.slimgpt_ratio_profile, "uniform")
         self.assertEqual(args.slimgpt_ffn_min_group_size, 4)
+
+    def test_parser_accepts_slimgpt_fixed_ffn_group_size(self):
+        from main import build_parser
+
+        args = build_parser().parse_args(
+            ["--prune_method", "slimgpt", "--slimgpt_ffn_group_size", "128"]
+        )
+        self.assertEqual(args.slimgpt_ffn_group_size, 128)
 
 
 if __name__ == "__main__":

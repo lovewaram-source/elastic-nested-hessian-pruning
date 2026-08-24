@@ -99,6 +99,12 @@ def build_parser():
         default=8,
         help="Smallest dynamic FFN OBS selection batch used only by SlimGPT.",
     )
+    parser.add_argument(
+        "--slimgpt_ffn_group_size",
+        type=int,
+        default=None,
+        help="Use a fixed FFN OBS selection batch; overrides dynamic SlimGPT groups.",
+    )
     parser.add_argument("--cache_dir", default="llm_weights", type=str )
     parser.add_argument('--use_variant', action="store_true", help="whether to use the wanda variant described in the appendix")
     parser.add_argument('--save', type=str, default=None, help='Path to save results.')

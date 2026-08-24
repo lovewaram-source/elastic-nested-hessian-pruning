@@ -388,6 +388,8 @@ def prune_slimgpt(args, model, tokenizer, dev):
         raise ValueError("SlimGPT requires a target parameter reduction in (0, 1)")
     if args.slimgpt_ffn_min_group_size <= 0:
         raise ValueError("slimgpt_ffn_min_group_size must be positive")
+    if args.slimgpt_ffn_group_size is not None and args.slimgpt_ffn_group_size <= 0:
+        raise ValueError("slimgpt_ffn_group_size must be positive when provided")
 
     original_parameters = sum(parameter.numel() for parameter in model.parameters())
     ratios = calibrate_structural_ratios(
@@ -504,6 +506,7 @@ def prune_slimgpt(args, model, tokenizer, dev):
                     ffn_hinv,
                     ratio,
                     min_group_size=args.slimgpt_ffn_min_group_size,
+                    fixed_group_size=args.slimgpt_ffn_group_size,
                 )
                 del ffn_hinv
                 torch.cuda.empty_cache()

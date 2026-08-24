@@ -279,19 +279,31 @@ def prune_attention_with_obs(attention, hessian_inverse, ratio):
     return {"removed_heads": removed, "kept_heads": current_heads}
 
 
-def prune_mlp_with_obs(mlp, hessian_inverse, ratio, min_group_size=8):
+def prune_mlp_with_obs(
+    mlp,
+    hessian_inverse,
+    ratio,
+    min_group_size=8,
+    fixed_group_size=None,
+):
     if min_group_size <= 0:
         raise ValueError("min_group_size must be positive")
+    if fixed_group_size is not None and fixed_group_size <= 0:
+        raise ValueError("fixed_group_size must be positive when provided")
     original_channels = list(range(mlp.down_proj.in_features))
     active = torch.ones(len(original_channels), dtype=torch.bool, device=hessian_inverse.device)
     weight = mlp.down_proj.weight.detach().float().clone()
     hinv = hessian_inverse.float()
     target = min(len(original_channels) - 1, int(len(original_channels) * ratio))
     removed = []
+    selection_group_sizes = []
     while len(removed) < target:
         remaining = target - len(removed)
-        batch = min(1024, remaining)
-        if remaining > min_group_size:
+        if fixed_group_size is not None:
+            batch = min(fixed_group_size, remaining)
+        else:
+            batch = min(1024, remaining)
+        if fixed_group_size is None and remaining > min_group_size:
             power = 2 ** int(math.floor(math.log2(remaining)))
             batch = min(batch, max(min_group_size, power))
         active_positions = torch.where(active)[0]
@@ -301,6 +313,7 @@ def prune_mlp_with_obs(mlp, hessian_inverse, ratio, min_group_size=8):
         local_positions = torch.topk(losses, batch, largest=False).indices
         positions = active_positions.index_select(0, local_positions).sort().values
         removed.extend(int(position) for position in positions.tolist())
+        selection_group_sizes.append(int(batch))
         remove_obs_group_in_place(weight, hinv, positions)
         active[positions] = False
     current_channels = torch.where(active)[0].tolist()
@@ -309,6 +322,7 @@ def prune_mlp_with_obs(mlp, hessian_inverse, ratio, min_group_size=8):
     slice_llama_mlp(mlp, kept, compensated_down_weight=compensated_weight)
     return {
         "removed_count": len(removed),
+        "selection_group_sizes": selection_group_sizes,
         "removed_channels": removed,
         "kept_channels": current_channels,
     }
