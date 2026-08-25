@@ -70,14 +70,19 @@ def build_parser():
     parser.add_argument(
         '--elastic_cache_mode',
         choices=['memory', 'disk'],
-        default='memory',
-        help='Store shared elastic SparseGPT plans in CPU memory or on disk.',
+        default='disk',
+        help='Store shared elastic SparseGPT plans in CPU memory or a temporary disk cache.',
     )
     parser.add_argument(
         '--elastic_cache_dir',
         type=str,
         default=None,
-        help='Base directory for temporary disk-backed elastic plans.',
+        help='Base directory for disk-backed elastic plans; defaults to the system temporary directory.',
+    )
+    parser.add_argument(
+        '--elastic_keep_cache',
+        action='store_true',
+        help='Keep successful disk-backed plans for later model export; otherwise remove the temporary cache.',
     )
     parser.add_argument(
         '--elastic_profile_preparation',
@@ -147,6 +152,7 @@ def main():
         plan_store = make_elastic_plan_store(
             args.elastic_cache_mode,
             args.elastic_cache_dir,
+            keep_on_success=args.elastic_keep_cache,
         )
         success = False
         preparation_breakdown = None

@@ -66,13 +66,16 @@ class MemoryElasticPlanStore:
 
 
 class DiskElasticPlanStore:
-    def __init__(self, base_dir):
+    def __init__(self, base_dir=None, keep_on_success=False):
+        if base_dir is None:
+            base_dir = tempfile.gettempdir()
         os.makedirs(base_dir, exist_ok=True)
         self.run_dir = tempfile.mkdtemp(
             prefix="elastic-plan-",
             dir=base_dir,
         )
         self._layer_indices = set()
+        self.keep_on_success = keep_on_success
 
     def _layer_path(self, layer_index):
         return os.path.join(self.run_dir, f"layer_{layer_index:03d}.pt")
@@ -99,17 +102,18 @@ class DiskElasticPlanStore:
         torch.save(_serialize(plans), self._layer_path(layer_index))
 
     def close(self, success):
-        if success:
+        if success and not self.keep_on_success:
             shutil.rmtree(self.run_dir)
         else:
             print(f"retaining elastic plan cache at {self.run_dir}")
 
 
-def make_elastic_plan_store(mode, cache_dir=None):
+def make_elastic_plan_store(mode, cache_dir=None, keep_on_success=False):
     if mode == "memory":
         return MemoryElasticPlanStore()
     if mode == "disk":
-        if not cache_dir:
-            raise ValueError("elastic_cache_dir is required for disk mode")
-        return DiskElasticPlanStore(cache_dir)
+        return DiskElasticPlanStore(
+            cache_dir,
+            keep_on_success=keep_on_success,
+        )
     raise ValueError(f"unsupported elastic cache mode: {mode}")

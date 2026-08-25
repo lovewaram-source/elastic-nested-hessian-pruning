@@ -953,22 +953,29 @@ class CliExposureTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unknown elastic SparseGPT method"):
             elastic_ordering_for_method("elastic_unknown")
 
-    def test_parser_accepts_elastic_disk_cache_options(self):
+    def test_parser_defaults_to_disk_backed_elastic_plan_cache(self):
+        from main import build_parser
+
+        args = build_parser().parse_args(["--prune_method", "elastic_sparsegpt"])
+
+        self.assertEqual(args.elastic_cache_mode, "disk")
+        self.assertIsNone(args.elastic_cache_dir)
+        self.assertFalse(args.elastic_keep_cache)
+
+    def test_parser_accepts_retaining_disk_backed_elastic_plans(self):
         from main import build_parser
 
         args = build_parser().parse_args(
             [
                 "--prune_method",
                 "elastic_sparsegpt",
-                "--elastic_cache_mode",
-                "disk",
                 "--elastic_cache_dir",
                 "/tmp/elastic-cache",
+                "--elastic_keep_cache",
             ]
         )
 
-        self.assertEqual(args.elastic_cache_mode, "disk")
-        self.assertEqual(args.elastic_cache_dir, "/tmp/elastic-cache")
+        self.assertTrue(args.elastic_keep_cache)
 
     def test_parser_accepts_elastic_preparation_profile(self):
         from main import build_parser
@@ -983,14 +990,14 @@ class CliExposureTests(unittest.TestCase):
 
         self.assertTrue(args.elastic_profile_preparation)
 
-    def test_parser_defaults_to_memory_elastic_cache(self):
+    def test_parser_defaults_to_disk_elastic_cache(self):
         from main import build_parser
 
         args = build_parser().parse_args(
             ["--prune_method", "elastic_sparsegpt"]
         )
 
-        self.assertEqual(args.elastic_cache_mode, "memory")
+        self.assertEqual(args.elastic_cache_mode, "disk")
         self.assertIsNone(args.elastic_cache_dir)
 
     def test_parser_accepts_wanda_ordered_elastic_method(self):
