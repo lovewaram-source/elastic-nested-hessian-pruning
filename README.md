@@ -18,6 +18,10 @@
 
 Token 隔离中的“私有”指部分校准位置使用各分支自己的激活统计。实际参考前向始终各自传播；没有另外拟合每率的参数残差 ΔW。完整数据流与公式见 [METHOD.md](docs/METHOD.md)。
 
+![四个参考分支独立前向，激活统计进入单独的嵌套重建过程](docs/figures/method-overview.svg)
+
+图中蓝色模块是统计构造与目标补偿；右侧参考输出仍各自进入下一block。融合只改变H的统计，不替换参考分支真实前向。
+
 ## 快速开始
 
 下载仓库或发布源码包，在项目根目录执行。需要 Linux + NVIDIA GPU、本地 Hugging Face Llama 模型，以及 `datasets.save_to_disk` 格式的 C4 / WikiText2。数据集路径设置见 [INSTALL.md](INSTALL.md)。
@@ -72,6 +76,12 @@ Token 隔离中的“私有”指部分校准位置使用各稀疏率自己的�
 | 50% Token私有 | 5.9095 | 6.5148 | 7.2745 | 8.6685 |
 
 † 历史对照与当前候选方法的重建执行策略不同，属于描述性比较。各率完整对齐H不是理论PPL下界。20%至50%表示全局稀疏率，中间档位仍包含未剪枝的稠密宏块。非结构化结果、平均H结果和完整来源见 [RESULTS.md](docs/RESULTS.md)。
+
+![非结构化和2:4的历史PPL与相对common H的差值，负差值表示记录中的PPL更低](docs/figures/ppl-comparison.svg)
+
+上排展示绝对PPL，下排展示相对历史common H的差值，以便看清小幅变化。两列使用不同纵轴范围；缺失结果不绘制，没有多seed误差条。这是历史记录的描述性比较，不是严格配对收益或显著性检验。
+
+两图保留可编辑SVG；结果图直接读取[完整数值表](docs/RESULTS.md)。修改数据后运行 `python scripts/plot_readme_figures.py` 重新生成，无需额外绘图库。
 
 ## 目录
 
