@@ -18,6 +18,7 @@ DOCUMENTS = (
     "README.md", "INSTALL.md", "LICENSE", "CONTRIBUTING.md", ".gitignore",
     "requirements.txt", "docs/CODE_MAP.md", "docs/EXPERIMENTS.md", "docs/RESULTS.md",
     "docs/METHOD.md", "docs/RELEASING.md",
+    "docs/GETTING_STARTED.md", "docs/VALIDATION.md",
 )
 RUNNERS = (
     "run_checkpoint_token_isolation", "run_rate_aligned_nested",

@@ -5,12 +5,23 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from experiment_common import _append_tsv, _write_json, benchmark_gate, input_groups
+from experiment_common import _append_tsv, _write_json, benchmark_gate, input_groups, synchronize
 
 
 class CommonHelperTests(unittest.TestCase):
+    def test_synchronize_imports_torch_for_cuda_and_is_noop_on_cpu(self):
+        with patch.dict(sys.modules, {"torch": None}):
+            synchronize(SimpleNamespace(type="cpu"))
+        sync = Mock()
+        device = SimpleNamespace(type="cuda")
+        with patch.dict(sys.modules, {"torch": SimpleNamespace(cuda=SimpleNamespace(synchronize=sync))}):
+            synchronize(device)
+        sync.assert_called_once_with(device)
+
     def test_json_replacement_and_tsv_single_header(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

@@ -1,4 +1,4 @@
-# Nested pruning with shared and rate-specific Hessians
+# Elastic Nested Hessian Pruning
 
 **研究不同稀疏率的激活统计，如何帮助嵌套剪枝进行误差补偿。**
 
@@ -6,7 +6,9 @@
 
 当前提供研究实现、数值测试和历史PPL记录，主要支持标准 Llama 七个线性投影。项目尚处于实验阶段，尚未提供最终的单文件弹性模型存储与部署接口。
 
-[方法原理](docs/METHOD.md) · [安装与数据](INSTALL.md) · [实验复现](docs/EXPERIMENTS.md) · [结果记录](docs/RESULTS.md) · [代码导航](docs/CODE_MAP.md)
+[同门接手指南](docs/GETTING_STARTED.md) · [方法原理](docs/METHOD.md) · [安装与数据](INSTALL.md) · [实验复现](docs/EXPERIMENTS.md) · [结果记录](docs/RESULTS.md) · [代码导航](docs/CODE_MAP.md)
+
+第一次接手：按[接手指南](docs/GETTING_STARTED.md)完成环境准备、测试和小规模运行。已有验证及其覆盖范围见[验证记录](docs/VALIDATION.md)。
 
 ## 我们在研究什么
 
@@ -21,6 +23,8 @@ Token 隔离中的“私有”指部分校准位置使用各分支自己的激�
 下载仓库或发布源码包，在项目根目录执行。需要 Linux + NVIDIA GPU、本地 Hugging Face Llama 模型，以及 `datasets.save_to_disk` 格式的 C4 / WikiText2。数据集路径设置见 [INSTALL.md](INSTALL.md)。
 
 ```bash
+git clone https://github.com/lovewaram-source/elastic-nested-hessian-pruning.git
+cd elastic-nested-hessian-pruning
 python -m pip install -r requirements.txt
 python -m unittest discover -s tests -p 'test_*.py'
 
@@ -40,7 +44,7 @@ python scripts/run_checkpoint_token_isolation.py \
 
 `--mode unstructured --unstructured-alpha 1` 可运行非结构化对照。每次使用新的输出、缓存目录。希望先确认数据流时，可按[小规模检查配方](docs/EXPERIMENTS.md#第一次运行先做小规模检查)缩小校准和评测预算；正式PPL必须恢复完整设置。
 
-主入口使用单GPU、CPU逐层调度，最终PPL阶段会把完整目标模型放到该GPU。当前没有统一测定所有环境下的最低显存、内存和时间预算；缓存建议放在有足够空间的本地SSD。兼容范围与未完成的验证见 [INSTALL.md](INSTALL.md)。
+主入口使用单GPU、CPU逐层调度，最终PPL阶段会把完整目标模型放到该GPU。当前没有统一测定所有环境下的最低显存、内存和时间预算；缓存建议放在有足够空间的本地SSD。已测试环境与安装限制见 [INSTALL.md](INSTALL.md)。
 
 ## 方法与入口
 
@@ -85,7 +89,7 @@ docs/RESULTS.md      已核对的 PPL 对照与来源说明
 
 ## 继续实验
 
-先运行 CPU 小模型测试，再使用新目录做 GPU 小规模检查，最后运行统一校准与完整 PPL 对照。保留每次运行的 `protocol.json`、`comparison.tsv`、`results.json` 和计时文件。完整数值测试应在自己的环境验证；源码整理期间仅完成了轻量测试和静态核验。
+先运行小模型测试，再使用新目录做 GPU 小规模检查，最后运行统一校准与完整 PPL 对照。保留每次运行的 `protocol.json`、`comparison.tsv`、`results.json` 和计时文件。整理后已在Linux / RTX 4090上通过全部56项测试；本轮未重跑7B PPL，详见[验证记录](docs/VALIDATION.md)。接手者仍应在自己的环境验证。
 
 当前checkpoint主入口没有断点续跑或永久模型导出功能，评测成功后会清理已消费的目标快照。源码和临时评测缓存的用途见[实验说明](docs/EXPERIMENTS.md)。贡献规则和下一轮对照建议见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 

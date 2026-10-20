@@ -144,6 +144,8 @@ def input_groups(modules):
 
 def synchronize(device):
     if device.type == "cuda":
+        import torch
+
         torch.cuda.synchronize(device)
 
 

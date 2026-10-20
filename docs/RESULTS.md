@@ -31,6 +31,21 @@
 
 来源运行目录标识：`checkpoint-token-isolation-20261016`、`checkpoint-token-isolation-private050-20261016`、`checkpoint-token-isolation-isolated-mean-20261016`、`checkpoint-all-mean-20261017`、`checkpoint-mean-hessian-20261017`。历史 dense-H/完整对齐 H 来源为第一组的 `summary.tsv`，候选方法来自各模式的 `results.json` / `comparison.tsv`。
 
+## 方法、命令与运行记录对应
+
+当前源码中的命令配方统一见 [EXPERIMENTS.md](EXPERIMENTS.md)。下表用于定位历史记录，不表示用当前源码再次得到过同样PPL。
+
+| 表中方法 | 当前入口/方法参数 | 历史运行标识 |
+|---|---|---|
+| common dense-reference H / 各率完整对齐H | `run_rate_aligned_nested.py`；重建策略与当前主入口不同 | `checkpoint-token-isolation-20261016/summary.tsv`中引用的历史列 |
+| 10%私有 | `cosine / anchor20 / 0.1` | `checkpoint-token-isolation-20261016` |
+| 50%私有 | `cosine / anchor20 / 0.5` | `checkpoint-token-isolation-private050-20261016` |
+| 全部平均表示 | `all_mean / isolated_mean_anchor20 / 1` | `checkpoint-all-mean-20261017` |
+| 50%位置平均 | `cosine / isolated_mean_anchor20 / 0.5` | `checkpoint-token-isolation-isolated-mean-20261016/private050` |
+| 平均H | `all_mean / mean_hessian / 1` | `checkpoint-mean-hessian-20261017` |
+
+参数顺序为`selection-rule / shared-fusion / private-fraction`。历史运行应以自己的`protocol.json`内`source_sha256`识别源码，不用今天的Git提交号替代原版本。当前公开包尚未提供所有历史源码快照、数据指纹和原始日志；缺失的追溯材料应补齐后再宣称严格复现。当前小模型代码验证记录见 [VALIDATION.md](VALIDATION.md)。
+
 完整对齐 H 是每个目标率从 dense 重放掩码的历史参考；当前 checkpoint 方法为单轨迹分阶段重建、继承数值前缀。虽然模型和校准配置相同，执行策略不同，以上不是严格同次配对实验。
 
 此前展示的“收益恢复率”定义为 `(PPL_common - PPL_method) / (PPL_common - PPL_aligned)`。这是描述性对照；2:4的20%分母仅0.00067860，比例对微小PPL波动极为敏感。不要把大于100%的比例解释为稳定的倍数收益，也不要把历史 common dense-H 误标成真实20%分支 H。

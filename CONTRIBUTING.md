@@ -1,5 +1,7 @@
 # 接手与继续实验
 
+第一次接手先读[同门接手指南](docs/GETTING_STARTED.md)。提交实验结果前核对[验证记录](docs/VALIDATION.md)，明确自己执行的是小模型验证、短评测还是完整7B实验。
+
 1. 按 `INSTALL.md` 准备模型、数据和环境，先运行 `python -m unittest discover -s tests -p 'test_*.py'`。
 2. 根据 `docs/CODE_MAP.md` 阅读 checkpoint 主入口和统计核心。改 Token 筛选时，保留固定真实参考分支的前向传播，不用融合激活覆盖参考路径。
 3. 改代码先用小模型测试验证：H 与直接矩阵乘法一致、实际前向一致、掩码嵌套、目标预算、数值前缀继承。

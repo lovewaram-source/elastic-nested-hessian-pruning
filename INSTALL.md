@@ -5,19 +5,20 @@
 ```bash
 conda create -n nested-pruning python=3.10 -y
 conda activate nested-pruning
-# 根据服务器驱动选择 PyTorch CUDA 构建，再安装其余依赖。
+# 已测试的 CUDA 12.1 构建；需要兼容的 NVIDIA 驱动。
+python -m pip install torch==2.3.1 --index-url https://download.pytorch.org/whl/cu121
 python -m pip install -r requirements.txt
 python -c 'import torch, transformers; print(torch.__version__, transformers.__version__, torch.cuda.is_available())'
 ```
 
-`requirements.txt` 是兼容范围，尚不是经过完整7B配对复跑验证的锁定环境。运行正式实验时，将实际版本另存为运行记录：
+`requirements.txt` 固定了服务器小模型测试通过时的顶层版本，不是完整依赖锁，也没有经过本版本完整7B配对复跑。此次使用既有环境，尚未验证空环境安装全过程。运行正式实验时，将实际版本另存为运行记录：
 
 ```bash
 python -m pip freeze > results-environment.txt
 nvidia-smi
 ```
 
-推荐Python 3.10或3.11环境。当前代码面向标准Llama结构和Linux CUDA实验，Windows本地可阅读源码或运行环境允许的轻量检查，不作为已验证的7B运行平台。完整小模型数值测试尚需在具备可用PyTorch的干净环境复核；文档提供命令不等于该环境已经通过验证。
+已测试Python 3.10.20。当前代码面向标准Llama结构和Linux CUDA实验，Windows本地可阅读源码或运行环境允许的轻量检查，不作为已验证的7B运行平台。2026-10-20在RTX 4090上通过全部56项测试，具体范围与环境见[验证记录](docs/VALIDATION.md)。
 
 ## 模型和数据
 
