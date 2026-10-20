@@ -1,0 +1,8 @@
+# Compatibility ranges, not a historical server lockfile. See INSTALL.md.
+torch>=2.3,<2.6
+transformers>=4.40,<4.45
+datasets>=2.18,<3
+accelerate>=0.28,<1
+numpy>=1.26,<2
+sentencepiece>=0.1.99,<0.3
+protobuf>=3.20,<6
