@@ -1,15 +1,17 @@
 # Code adapted from https://github.com/IST-DASLab/sparsegpt/blob/master/datautils.py
 
 import numpy as np
+import os
 import random
 import torch
 from datasets import load_dataset, load_from_disk
 
 
-LOCAL_C4_TRAIN = "/data/DataSet/llm_dataset/c4/c4train"
-LOCAL_C4_VALIDATION = "/data/DataSet/llm_dataset/c4/c4validation"
-LOCAL_WIKITEXT2_TRAIN = "/data/DataSet/llm_dataset/wikitext2/wikitext2_train"
-LOCAL_WIKITEXT2_TEST = "/data/DataSet/llm_dataset/wikitext2/wikitext2_test"
+# Preserve server defaults; configure offline datasets before launching Python.
+LOCAL_C4_TRAIN = os.environ.get("WANDA_C4_TRAIN", "/data/DataSet/llm_dataset/c4/c4train")
+LOCAL_C4_VALIDATION = os.environ.get("WANDA_C4_VALIDATION", "/data/DataSet/llm_dataset/c4/c4validation")
+LOCAL_WIKITEXT2_TRAIN = os.environ.get("WANDA_WIKITEXT2_TRAIN", "/data/DataSet/llm_dataset/wikitext2/wikitext2_train")
+LOCAL_WIKITEXT2_TEST = os.environ.get("WANDA_WIKITEXT2_TEST", "/data/DataSet/llm_dataset/wikitext2/wikitext2_test")
 
 # Set seed for reproducibility
 def set_seed(seed):
