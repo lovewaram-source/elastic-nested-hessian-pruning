@@ -19,6 +19,7 @@ DOCUMENTS = (
     "requirements.txt", "docs/CODE_MAP.md", "docs/EXPERIMENTS.md", "docs/RESULTS.md",
     "docs/METHOD.md", "docs/RELEASING.md",
     "docs/GETTING_STARTED.md", "docs/VALIDATION.md",
+    "docs/figures/method-overview.svg", "docs/figures/ppl-comparison.svg",
 )
 RUNNERS = (
     "run_checkpoint_token_isolation", "run_rate_aligned_nested",
@@ -26,6 +27,7 @@ RUNNERS = (
     "benchmark_mean_hessian", "benchmark_module_token_optimization",
     "summarize_checkpoint_token_isolation", "summarize_replacement_error_experiment",
     "summarize_compensation_conflict", "export_github",
+    "plot_readme_figures",
 )
 TESTS = (
     "data", "data_paths", "elastic_2of4", "nm_pruning", "experiment_common",
@@ -33,6 +35,7 @@ TESTS = (
     "mean_hessian", "module_token_isolation", "module_token_optimization",
     "replacement_error_routing", "token_residual_diagnostics", "compensation_conflict",
     "export_github",
+    "readme_figures",
 )
 # High-confidence credential patterns. Errors report paths, never matched values.
 SECRET_RULES = (

@@ -29,6 +29,10 @@
 
 ## 来源和可比性
 
+![历史PPL及其相对common H的差值](figures/ppl-comparison.svg)
+
+上排为绝对PPL，下排为`PPL_method − PPL_common`，越低越好。各列纵轴范围独立，缺失数据不插值；未提供重复seed的不确定性估计。图由`python scripts/plot_readme_figures.py`直接读取本页表格生成，历史与checkpoint执行策略不同，不能解释为严格配对收益。
+
 来源运行目录标识：`checkpoint-token-isolation-20261016`、`checkpoint-token-isolation-private050-20261016`、`checkpoint-token-isolation-isolated-mean-20261016`、`checkpoint-all-mean-20261017`、`checkpoint-mean-hessian-20261017`。历史 dense-H/完整对齐 H 来源为第一组的 `summary.tsv`，候选方法来自各模式的 `results.json` / `comparison.tsv`。
 
 ## 方法、命令与运行记录对应

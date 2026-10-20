@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="750" viewBox="0 0 1000 750" role="img" aria-labelledby="title desc">
+<title id="title">Reference forward and nested reconstruction</title><desc id="desc">Four fixed sparse reference branches propagate independently. Selected token statistics form Hessians for a separate reconstruction from original dense weights. No private weight residual is fitted.</desc>
+<style>text{font-family:Times New Roman, Microsoft YaHei, SimSun, serif;fill:#17212b}</style>
+<rect width="100%" height="100%" fill="white"/>
+<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8" fill="#667085"/></marker></defs>
+<path d="M500,82 C500,104 500,88 500,112" fill="none" stroke="#667085" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M500,176 C500,198 500,182 500,206" fill="none" stroke="#667085" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M500,270 C500,292 166,292 166,316" fill="none" stroke="#667085" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M500,270 C500,292 500,292 500,316" fill="none" stroke="#667085" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M500,270 C500,292 834,292 834,316" fill="none" stroke="#667085" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M166,380 C166,402 334,408 334,432" fill="none" stroke="#667085" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M500,380 C500,402 334,408 334,432" fill="none" stroke="#667085" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M334,496 C334,518 530,524 530,548" fill="none" stroke="#667085" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M780,496 C780,518 530,524 530,548" fill="none" stroke="#667085" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M530,612 C530,634 530,628 530,652" fill="none" stroke="#667085" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M630,50 L980,50 L980,408 L780,408 L780,432" fill="none" stroke="#667085" stroke-dasharray="6 5" stroke-width="2" marker-end="url(#arrow)"/>
+<g id="node-d"><rect x="370" y="18" width="260" height="64" rx="8" fill="#f6f8fa" stroke="#bac8d4"/>
+<text x="500" y="44" font-size="18" text-anchor="middle" font-weight="700">原始稠密模型</text>
+<text x="500" y="67" font-size="18" text-anchor="middle" font-weight="400">固定校准输入</text>
+</g>
+<g id="node-r"><rect x="370" y="112" width="260" height="64" rx="8" fill="#f6f8fa" stroke="#bac8d4"/>
+<text x="500" y="138" font-size="18" text-anchor="middle" font-weight="700">四个固定稀疏参考分支</text>
+<text x="500" y="161" font-size="18" text-anchor="middle" font-weight="400">20% · 30% · 40% · 50%</text>
+</g>
+<g id="node-f"><rect x="370" y="206" width="260" height="64" rx="8" fill="#f6f8fa" stroke="#bac8d4"/>
+<text x="500" y="232" font-size="18" text-anchor="middle" font-weight="700">各参考分支独立前向</text>
+<text x="500" y="255" font-size="18" text-anchor="middle" font-weight="400">各自权重与真实激活</text>
+</g>
+<g id="node-z"><rect x="36" y="316" width="260" height="64" rx="8" fill="#f6f8fa" stroke="#bac8d4"/>
+<text x="166" y="342" font-size="18" text-anchor="middle" font-weight="700">block入口对齐Token</text>
+<text x="166" y="365" font-size="18" text-anchor="middle" font-weight="400">按差异选位置集合 M</text>
+</g>
+<g id="node-x"><rect x="370" y="316" width="260" height="64" rx="8" fill="#f6f8fa" stroke="#bac8d4"/>
+<text x="500" y="342" font-size="18" text-anchor="middle" font-weight="700">Hook收集投影输入 X</text>
+<text x="500" y="365" font-size="18" text-anchor="middle" font-weight="400">各线性层的真实激活</text>
+</g>
+<g id="node-n"><rect x="704" y="316" width="260" height="64" rx="8" fill="#f6f8fa" stroke="#bac8d4"/>
+<text x="834" y="342" font-size="18" text-anchor="middle" font-weight="700">参考输出各自传播</text>
+<text x="834" y="365" font-size="18" text-anchor="middle" font-weight="400">进入下一block</text>
+</g>
+<g id="node-h"><rect x="204" y="432" width="260" height="64" rx="8" fill="#eaf4fb" stroke="#bac8d4"/>
+<text x="334" y="458" font-size="18" text-anchor="middle" font-weight="700">按策略构造Hessian</text>
+<text x="334" y="481" font-size="18" text-anchor="middle" font-weight="400">隔离 / 平均表示 / 平均H</text>
+</g>
+<g id="node-w"><rect x="650" y="432" width="260" height="64" rx="8" fill="#f6f8fa" stroke="#bac8d4"/>
+<text x="780" y="458" font-size="18" text-anchor="middle" font-weight="700">原始dense层权重</text>
+<text x="780" y="481" font-size="18" text-anchor="middle" font-weight="400">目标重建的起点</text>
+</g>
+<g id="node-c"><rect x="400" y="548" width="260" height="64" rx="8" fill="#eaf4fb" stroke="#bac8d4"/>
+<text x="530" y="574" font-size="18" text-anchor="middle" font-weight="700">嵌套剪枝与OBS补偿</text>
+<text x="530" y="597" font-size="18" text-anchor="middle" font-weight="400">冻结并继承已处理前缀</text>
+</g>
+<g id="node-e"><rect x="400" y="652" width="260" height="64" rx="8" fill="#f6f8fa" stroke="#bac8d4"/>
+<text x="530" y="678" font-size="18" text-anchor="middle" font-weight="700">各档目标快照</text>
+<text x="530" y="701" font-size="18" text-anchor="middle" font-weight="400">完整WikiText2 PPL</text>
+</g>
+<text x="36" y="742" font-size="18" text-anchor="start" font-weight="400">统计融合不覆盖参考前向；“私有Token”不等于私有参数 ΔW。</text>
+</svg>
