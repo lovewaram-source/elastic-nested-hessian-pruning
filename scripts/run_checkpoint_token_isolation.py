@@ -34,6 +34,7 @@ from run_rate_aligned_nested import (
 from experiment_common import _append_tsv, _eval_ppl, _write_json
 from experiment_common import input_groups, synchronize
 from token_isolation_core import prepare_device_plan
+from run_metadata import validate_run_arguments, runtime_record, evaluation_record
 
 
 def configure_rates(rates):
@@ -386,6 +387,7 @@ def reconstruct(args, model, initial, attention_mask, position_ids, cache,
 def run(args):
     from transformers import AutoTokenizer
 
+    validate_run_arguments(args)
     configure_rates(args.rates)
     if args.output.exists() and any(args.output.iterdir()):
         raise FileExistsError("output must be new or empty")
@@ -427,7 +429,8 @@ def run(args):
         propagation=f"{len(RATES)} actual checkpoint forward paths, no replacement in true forward propagation",
         reconstruction="original dense weights; stagewise configured rate Hessians; frozen numerical prefixes",
         calibration="C4 64 x 4096 default; original sample normalization and damping",
-        evaluation="full WikiText2 test; evaluation time excluded from all preparation/pruning totals",
+        evaluation=("full available WikiText2 windows" if args.eval_samples is None
+                    else "truncated WikiText2 debug evaluation"),
         evaluation_rates=sorted(getattr(args, "eval_rates", RATES)),
         execution="single visible GPU; CPU-resident model; one active block; layer-streamed in-memory references",
         source_sha256={str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest()
@@ -467,6 +470,8 @@ def run(args):
         )
     finally:
         model.model.embed_tokens.to("cpu")
+    protocol["runtime"] = runtime_record(args, model, evaluation)
+    _write_json(args.output / "protocol.json", protocol)
     capture_seconds = time.perf_counter() - tick
     counts, totals, timings = reconstruct(
         args, model, initial, attention_mask, position_ids, cache,
@@ -514,6 +519,8 @@ def run(args):
                         timings["pruning_seconds"], 0., evaluation_seconds,
                         counts[rate], totals, zeros, 0)
         row.update(private_fraction=None if relative else fraction, shared_fusion=fusion,
+                   evaluation_scope=protocol["runtime"]["evaluation"]["scope"],
+                   evaluation_windows=protocol["runtime"]["evaluation"]["actual_windows"],
                    selection_rule=args.selection_rule,
                    share_error_threshold=args.share_error_threshold if relative else None,
                    reference_preparation_seconds=f"{reference_seconds:.2f}",
@@ -587,6 +594,10 @@ def parse_args(argv=None):
         parser.error("rates must be strictly increasing and start with 0.2")
     if any(not math.isfinite(rate) or not 0.2 <= rate < 1.0 for rate in args.rates):
         parser.error("rates must be finite and in [0.2, 1.0)")
+    try:
+        validate_run_arguments(args)
+    except ValueError as error:
+        parser.error(str(error))
     if args.eval_rates is None:
         args.eval_rates = args.rates
     else:

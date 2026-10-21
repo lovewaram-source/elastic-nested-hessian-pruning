@@ -18,7 +18,7 @@
 
 ## 修改位置
 
-历史排序内核的函数、实际方向和旧入口归档情况见 [SORTING.md](SORTING.md)。排序主要在 `lib/elastic_sparsegpt.py` 的 `column_permutation()`、`_wanda_group_stage_desc_order()`、`_wanda_group_stage_quartile_interleave_order()` 和 `reorder_next_2of4_stage_groups()`；当前Hessian/Token主入口不启用它们。
+排序内核的函数、实际方向和旧入口归档情况见 [SORTING.md](SORTING.md)。新独立入口为`run_sorting_nested.py`，使用稠密参考H，不改动当前Hessian/Token主入口。排序主要在 `lib/elastic_sparsegpt.py` 的 `column_permutation()`、`_wanda_group_stage_desc_order()`、`_wanda_group_stage_quartile_interleave_order()` 和 `reorder_next_2of4_stage_groups()`；动态函数暂未开放CLI。
 
 | 要改什么 | 主要文件 |
 |---|---|

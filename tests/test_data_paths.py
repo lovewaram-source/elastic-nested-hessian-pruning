@@ -4,11 +4,33 @@ from pathlib import Path
 import runpy
 import sys
 from types import ModuleType
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 
 class DataPathTests(unittest.TestCase):
+    def test_c4_short_text_retry_is_bounded(self):
+        module = self.load_constants({})
+        dataset = [{"text": "too short"}]
+        calls = []
+        module["load_from_disk"] = lambda path: dataset
+        # run_path functions retain their own globals, not the returned copy.
+        loader = module["get_c4"]
+        loader.__globals__["load_from_disk"] = lambda path: dataset
+        def tokenizer(text, return_tensors):
+            calls.append(text)
+            return SimpleNamespace(input_ids=SimpleNamespace(shape=(1, 2)))
+        with self.assertRaisesRegex(ValueError, "after 3 attempts"):
+            loader(1, 0, 8, tokenizer, max_attempts_per_sample=3)
+        self.assertEqual(len(calls), 3)
+
+    def test_c4_empty_dataset_fails_immediately(self):
+        loader = self.load_constants({})["get_c4"]
+        loader.__globals__["load_from_disk"] = lambda path: []
+        with self.assertRaisesRegex(ValueError, "nonempty"):
+            loader(1, 0, 8, None)
+
     def load_constants(self, overrides):
         fake_datasets = ModuleType("datasets")
         fake_datasets.load_dataset = lambda *a, **k: None

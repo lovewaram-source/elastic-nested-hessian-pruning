@@ -252,7 +252,7 @@ def _scatter_slice_mask(block_mask, rows, columns, start, end, permutation, inve
 
 
 def _collect_layer_plans(layer, inputs, attention_mask, position_ids,
-                         layer_device, percdamp):
+                         layer_device, percdamp, ordering="original", predicted_global_sparsity=None):
     import torch
     from rate_aligned_src.elastic_sparsegpt import ElasticSparseGPT
 
@@ -275,7 +275,8 @@ def _collect_layer_plans(layer, inputs, attention_mask, position_ids,
 
     plans = {}
     for name, pruner in pruners.items():
-        plans[name] = pruner.prepare_plan(percdamp=percdamp, ordering="original")
+        plans[name] = pruner.prepare_plan(percdamp=percdamp, ordering=ordering,
+                                         predicted_global_sparsity=predicted_global_sparsity)
         pruner.free()
     del pruners
     if torch.cuda.is_available() and layer_device.type == "cuda":
@@ -321,6 +322,8 @@ def _load_eval_loader(args, tokenizer):
     from types import SimpleNamespace
     from rate_aligned_src.data import get_loaders
 
+    if args.eval_samples is not None and args.eval_samples < 1:
+        raise ValueError("eval-samples must be positive")
     _, loader = get_loaders(
         "wikitext2", seed=0, seqlen=args.seqlen, tokenizer=tokenizer
     )
@@ -328,6 +331,8 @@ def _load_eval_loader(args, tokenizer):
         loader = SimpleNamespace(
             input_ids=loader.input_ids[:, : args.eval_samples * args.seqlen]
         )
+    if loader.input_ids.numel() // args.seqlen < 1:
+        raise ValueError("evaluation data contains no complete sequence window")
     return loader
 
 
@@ -768,6 +773,8 @@ def main():
         parser.error("nsamples and seqlen must be positive")
     if args.eval_samples is not None and args.eval_samples < 1:
         parser.error("eval-samples must be positive")
+    if not math.isfinite(args.percdamp) or args.percdamp <= 0:
+        parser.error("percdamp must be finite and positive")
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
     for key in ("HF_HUB_OFFLINE", "HF_DATASETS_OFFLINE", "TRANSFORMERS_OFFLINE"):
         os.environ.setdefault(key, "1")

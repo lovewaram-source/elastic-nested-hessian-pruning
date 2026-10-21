@@ -119,6 +119,10 @@ PY
 
 输出/缓存路径非空时 checkpoint 入口会拒绝运行。调试时可将 `--nsamples`、`--seqlen`、`--eval-samples` 减小；正式结果必须恢复完整设置，并核对全部档位、零权重比例、`nested_mask_violations=0` 和全部参考前向计数。
 
+当前入口会提前拒绝非法评测窗口数、非有限/非正阻尼、超出[0,1]的补偿系数，以及不支持的2:4档位。2:4的`--rates`必须是`0.2,0.3,0.4,0.5`的连续前缀（至少两档）；非结构化可使用其他整数百分比档位，避免按百分比命名的缓存碰撞。
+
+`protocol.json.runtime`自动记录环境、实际加载的数据路径/指纹、模型config和运行源码依赖哈希。结果行的`evaluation_scope`区分`truncated_debug`与`full_available_windows`，`evaluation_windows`记录实际窗口数。独立排序实验使用[排序说明](SORTING.md)中的新入口，不与本页Token融合配方叠加。
+
 ## 常见问题与当前边界
 
 - **为什么设了CPU调度还需要足够GPU显存？** 逐层调度用于校准和重建，最终PPL调用会把完整模型移动到所选GPU。

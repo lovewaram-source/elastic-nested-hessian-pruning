@@ -103,6 +103,13 @@ class CheckpointIsolationTests(unittest.TestCase):
         self.assertEqual(args.rates, (.2, .3, .4, .5, .6, .7))
         self.assertEqual(args.eval_rates, (.7,))
 
+    def test_cli_defaults_to_evaluating_every_six_rate_target(self):
+        args = parse_args([
+            "--output", "unused-results", "--cache", "unused-cache",
+            "--mode", "unstructured", "--rates", "0.2,0.3,0.4,0.5,0.6,0.7",
+        ])
+        self.assertEqual(args.eval_rates, (.2, .3, .4, .5, .6, .7))
+
     @torch.no_grad()
     def test_interleaved_forward_equals_four_independent_checkpoint_models(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -403,6 +410,8 @@ class CheckpointIsolationTests(unittest.TestCase):
                 args = parse_args(["--mode", mode, "--nsamples", "2", "--seqlen", "8",
                                    "--private-fraction", str(fraction),
                                    "--shared-fusion", fusion,
+                                   "--rates", "0.2,0.3,0.4,0.5,0.6,0.7",
+                                   "--eval-rates", "0.2,0.3,0.4,0.5,0.6,0.7",
                                    "--output", str(Path(folder) / "results"),
                                    "--cache", str(Path(folder) / "cache")])
 
@@ -423,7 +432,8 @@ class CheckpointIsolationTests(unittest.TestCase):
                 self.assertTrue(all(row["private_fraction"] == fraction for row in rows))
                 self.assertTrue(all(row["shared_fusion"] == fusion for row in rows))
                 self.assertTrue(all(row["hessian_policy"].endswith(f"_{round(fraction * 100):03d}") for row in rows))
-                self.assertEqual({row["sparsity"] for row in rows}, {"0.20", "0.30", "0.40", "0.50"})
+                self.assertEqual({row["sparsity"] for row in rows},
+                                 {"0.20", "0.30", "0.40", "0.50", "0.60", "0.70"})
                 self.assertTrue(all(float(row["ppl_wikitext2"]) > 0 for row in rows))
                 timing = json.loads((args.output / "timings.json").read_text())
                 self.assertGreater(timing["total_wall_excluding_ppl_seconds"], 0)
@@ -443,7 +453,7 @@ class CheckpointIsolationTests(unittest.TestCase):
                               side_effect=[1., RuntimeError("injected evaluation failure")]):
                     with self.assertRaisesRegex(RuntimeError, "injected evaluation failure"):
                         run(failed_args)
-                self.assertEqual(len(list((failed_args.cache / "target").glob("*_s20.pt"))), 2)
+                self.assertEqual(len(list((failed_args.cache / "target").glob("*_s60.pt"))), 2)
 
 
 if __name__ == "__main__":
