@@ -86,7 +86,18 @@ $$
 
 已保留内核位于 `lib/elastic_sparsegpt.py`：`column_permutation()` 选择排序策略，`_wanda_group_stage_desc_order()` 实现宏块内整组排序，`_wanda_group_stage_quartile_interleave_order()` 实现P&P式交错。
 
-**目前保留的是排序内核，旧完整实验CLI已归档；当前Hessian/Token主入口仍使用原始列顺序。** 当前公开内核也没有RIA排序选项，不能把RIA选掩码等同于RIA排序。下面的Hessian PPL表不包含排序收益。完整选项、单层调用示例及历史入口位置见[排序代码说明](docs/SORTING.md)。
+现在提供独立排序入口 `scripts/run_sorting_nested.py`：固定稠密参考H，依次重建20%/30%/40%/50%目标，并保存实际排列。**原Hessian/Token主入口仍使用原始列顺序，不受这个入口影响。** 旧历史CLI仍归档；新入口不代表历史PPL已复现。当前没有RIA排序选项。
+
+```bash
+# 先用短评测检查流水线；这是调试PPL，不与正式结果表混用。
+python scripts/run_sorting_nested.py \
+  --model /path/to/Llama-2-7b-hf --mode 2of4 --gpu 0 \
+  --ordering wanda_group_pruned_part_stage_desc --structured-alpha 0.25 \
+  --nsamples 2 --seqlen 128 --eval-samples 2 \
+  --output results/smoke-sorting --cache cache/smoke-sorting
+```
+
+使用新的output/cache目录，另跑 `--ordering original` 作为同流水线对照；非结构化可用 `--mode unstructured --ordering wanda --unstructured-alpha 1`。正式对照恢复相同的64×4096校准并去掉`--eval-samples`。下面的Hessian PPL表不包含排序收益，详细配方和边界见[排序代码说明](docs/SORTING.md)。
 
 ## 方法与入口
 
@@ -96,6 +107,7 @@ $$
 | 共用 dense-reference H 与各率完整对齐 H 的历史对照 | `scripts/run_rate_aligned_nested.py` |
 | 按模块选择 Token 的诊断和消融 | 同一 checkpoint 入口的 `module_*` 选项 |
 | 补偿冲突诊断（不生成 PPL） | `scripts/run_compensation_conflict.py` |
+| 独立排序对照：固定dense H，无Token融合 | `scripts/run_sorting_nested.py` |
 | 嵌套剪枝与 OBS 内核 | `lib/elastic_sparsegpt.py`、`lib/sparsegpt.py` |
 
 Token 隔离中的“私有”指部分校准位置使用各稀疏率自己的激活统计；剩余位置使用 20% 锚点。全平均指同一位置的各分支激活先平均再计算 Gram。平均 H 则是各分支 Gram 等权平均，两者不同。实际前向仍按固定参考分支各自传播。
@@ -137,7 +149,7 @@ docs/RESULTS.md      已核对的 PPL 对照与来源说明
 
 ## 继续实验
 
-先运行小模型测试，再使用新目录做 GPU 小规模检查，最后运行统一校准与完整 PPL 对照。保留每次运行的 `protocol.json`、`comparison.tsv`、`results.json` 和计时文件。整理后已在Linux / RTX 4090上通过全部56项测试；本轮未重跑7B PPL，详见[验证记录](docs/VALIDATION.md)。接手者仍应在自己的环境验证。
+先运行小模型测试，再使用新目录做 GPU 小规模检查，最后运行统一校准与完整 PPL 对照。保留每次运行的 `protocol.json`、`comparison.tsv`、`results.json` 和计时文件。2026-10-21在Linux / RTX 4090上通过全部67项测试，包含独立排序的CUDA端到端检查；本轮未重跑7B PPL，详见[验证记录](docs/VALIDATION.md)。接手者仍应在自己的环境验证。
 
 当前checkpoint主入口没有断点续跑或永久模型导出功能，评测成功后会清理已消费的目标快照。源码和临时评测缓存的用途见[实验说明](docs/EXPERIMENTS.md)。贡献规则和下一轮对照建议见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 

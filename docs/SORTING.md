@@ -2,13 +2,13 @@
 
 ## 检查结论
 
-**排序内核仍在当前公开源码中，但完整的历史排序实验入口没有随精简版发布。** 当前Hessian/Token实验保持原始列顺序，不能通过它的现有CLI直接复跑历史排序实验。
+**现已提供独立排序入口 `scripts/run_sorting_nested.py`，历史旧CLI仍归档。** 新入口固定使用稠密参考路径的H，不融合Token，在单卡上按层重建、评测20%/30%/40%/50%四档。当前Hessian/Token主入口仍保持原始列顺序。
 
 本页基于源码检查，不代表重新运行了排序PPL实验。现有Hessian结果表也不包含排序收益。
 
 ## 已保留的实现
 
-主要实现位于 [lib/elastic_sparsegpt.py](../lib/elastic_sparsegpt.py) 的 `column_permutation()`。以下名称是内核参数，不是当前主入口的命令行选项。
+主要实现位于 [lib/elastic_sparsegpt.py](../lib/elastic_sparsegpt.py) 的 `column_permutation()`。独立排序入口通过`--ordering`开放下面的部分静态模式；未开放的变体仍仅为内核API，不是Token主入口选项。
 
 | 内核 `ordering` | 排序依据与范围 | 实际顺序 |
 |---|---|---|
@@ -84,10 +84,30 @@ apply_elastic_2of4_stage(
 - 同目录下 `tests/test_wanda_group_ordering.py`：包含宏块内降序、预测剪枝部分和P&P交错的历史测试；它依赖旧`lib.prune`，未作为当前测试发布。
 - 同目录下 `scripts/run_sorting_ablation_20_50.sh`、`run_sorting_ablation_20_50_global50.sh`、`aggregate_sorting_ablation.py`：非结构化排序调度与汇总脚本；含原机器路径，不是可移植入口。
 
-本轮没有恢复整套旧入口，也没有将RIA排序或历史排序PPL标为已复现。若要继续这条实验线，应先把选定排序模式接入独立、可移植的入口，并迁移相应数值测试和结果来源。
+本轮没有恢复整套旧入口，也没有将RIA排序或历史排序PPL标为已复现。新入口由小模型测试覆盖预算、排列和嵌套零权重；历史旧测试不直接依赖恢复。
+
+## 独立排序对照怎么跑
+
+先按[安装说明](../INSTALL.md)设置四个数据路径。下面是同一流水线中的2:4正式对照，使用一张卡逐个运行，各模式使用不同输出和缓存目录：
+
+```bash
+for ordering in original wanda_group_stage_desc wanda_group_pruned_part_stage_desc wanda_group_stage_quartile_interleave; do
+  python scripts/run_sorting_nested.py \
+    --model /path/to/Llama-2-7b-hf --mode 2of4 --gpu 0 \
+    --ordering "$ordering" --structured-alpha 0.25 \
+    --nsamples 64 --seqlen 4096 --seed 0 \
+    --output "results/sorting-$ordering" --cache "cache/sorting-$ordering"
+done
+```
+
+先调试时将校准改为`--nsamples 2 --seqlen 128`并增加`--eval-samples 2`；仍加载完整模型。非结构化支持`original`、`wanda`、`sparsegpt`、`wanda_pruned_part`、`sparsegpt_pruned_part`，预测全局掩码的稀疏率固定为50%。2:4只开放`original`与宏块内的四个静态组模式，晚期交错也可用；不开放任意单列排列、动态排序或RIA。
+
+每层保存`permutations_layer_*.pt`；P&P重组后的2:4约束在排列坐标内检查，不保证逆排列回原矩阵后仍符合原始相邻物理四列组。部署或压缩时必须保留并正确使用这些排列，当前没有相应部署导出器。
+
+结果写入`comparison.tsv`与`results.json`，协议记录H策略、排序时机、实际环境和数据指纹。每个成功评测档位才删除其已消费快照；本入口同样不提供断点续跑，也不改变现有Hessian结果表。
 
 ## 与当前Hessian工作的边界
 
-`scripts/run_rate_aligned_nested.py` 显式使用 `ordering="original"`；当前Token主入口使用 `scripts/token_isolation_core.py` 中的原序计划（单位排列）。因此当前Hessian/Token对照**不启用上述排序**。
+`scripts/run_rate_aligned_nested.py` 的历史实验调用保持默认 `ordering="original"`；当前Token主入口使用 `scripts/token_isolation_core.py` 中的原序计划（单位排列）。因此已有Hessian/Token对照**不启用上述排序**；只有新独立入口显式传入排序选项。
 
 排序回答“哪些列先处理、哪些列组成一组”；Hessian构造回答“使用哪些分支的激活统计来补偿”。两者可以作为不同实验维度，但开启排序后需要重新设置对照，不能直接沿用当前无排序PPL表。

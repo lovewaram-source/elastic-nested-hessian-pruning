@@ -13,6 +13,16 @@ LOCAL_C4_VALIDATION = os.environ.get("WANDA_C4_VALIDATION", "/data/DataSet/llm_d
 LOCAL_WIKITEXT2_TRAIN = os.environ.get("WANDA_WIKITEXT2_TRAIN", "/data/DataSet/llm_dataset/wikitext2/wikitext2_train")
 LOCAL_WIKITEXT2_TEST = os.environ.get("WANDA_WIKITEXT2_TEST", "/data/DataSet/llm_dataset/wikitext2/wikitext2_test")
 
+DATASET_RECORDS = {}
+
+
+def _record_dataset(path, dataset):
+    DATASET_RECORDS[str(os.path.abspath(path))] = {
+        "fingerprint": getattr(dataset, "_fingerprint", None),
+        "rows": len(dataset),
+        "columns": list(getattr(dataset, "column_names", ())),
+    }
+
 # Set seed for reproducibility
 def set_seed(seed):
     np.random.seed(seed)
@@ -28,6 +38,8 @@ def get_wikitext2(nsamples, seed, seqlen, tokenizer):
     # Use server-local train/test datasets; evaluation must not access the Hub.
     traindata = load_from_disk(LOCAL_WIKITEXT2_TRAIN)
     testdata = load_from_disk(LOCAL_WIKITEXT2_TEST)
+    _record_dataset(LOCAL_WIKITEXT2_TRAIN, traindata)
+    _record_dataset(LOCAL_WIKITEXT2_TEST, testdata)
 
     # Encode datasets
     trainenc = tokenizer(" ".join(traindata['text']), return_tensors='pt')
@@ -46,20 +58,31 @@ def get_wikitext2(nsamples, seed, seqlen, tokenizer):
     return trainloader, testenc
 
 # Load and process c4 dataset
-def get_c4(nsamples, seed, seqlen, tokenizer):
+def get_c4(nsamples, seed, seqlen, tokenizer, max_attempts_per_sample=10000):
     # Load the server-local C4 datasets; calibration must not access the Hub.
     traindata = load_from_disk(LOCAL_C4_TRAIN)
     valdata = load_from_disk(LOCAL_C4_VALIDATION)
+    _record_dataset(LOCAL_C4_TRAIN, traindata)
+    _record_dataset(LOCAL_C4_VALIDATION, valdata)
+    if not len(traindata) or not len(valdata):
+        raise ValueError("C4 train and validation datasets must be nonempty")
+    if max_attempts_per_sample < 1:
+        raise ValueError("max_attempts_per_sample must be positive")
 
     # Generate samples from training set
     random.seed(seed)
     trainloader = []
     for _ in range(nsamples):
-        while True:
+        for attempt in range(max_attempts_per_sample):
             i = random.randint(0, len(traindata) - 1)
             trainenc = tokenizer(traindata[i]['text'], return_tensors='pt')
             if trainenc.input_ids.shape[1] > seqlen:
                 break
+        else:
+            raise ValueError(
+                f"C4 sampling found no text longer than seqlen={seqlen} after "
+                f"{max_attempts_per_sample} attempts; check data and sequence length"
+            )
         i = random.randint(0, trainenc.input_ids.shape[1] - seqlen - 1)
         j = i + seqlen
         inp = trainenc.input_ids[:, i:j]

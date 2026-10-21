@@ -13,7 +13,7 @@ class _CaughtFirstLayer(Exception):
 def _write_json(path, value):
     path = Path(path)
     temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(value, indent=2, ensure_ascii=False))
+    temporary.write_text(json.dumps(value, indent=2, ensure_ascii=False), encoding="utf-8")
     os.replace(temporary, path)
 
 

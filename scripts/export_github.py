@@ -29,6 +29,7 @@ RUNNERS = (
     "summarize_checkpoint_token_isolation", "summarize_replacement_error_experiment",
     "summarize_compensation_conflict", "export_github",
     "plot_readme_figures",
+    "run_sorting_nested",
 )
 TESTS = (
     "data", "data_paths", "elastic_2of4", "nm_pruning", "experiment_common",
@@ -37,6 +38,7 @@ TESTS = (
     "replacement_error_routing", "token_residual_diagnostics", "compensation_conflict",
     "export_github",
     "readme_figures",
+    "run_metadata", "sorting_runner",
 )
 # High-confidence credential patterns. Errors report paths, never matched values.
 SECRET_RULES = (
