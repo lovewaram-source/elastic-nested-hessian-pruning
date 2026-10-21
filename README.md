@@ -52,6 +52,8 @@ python scripts/run_checkpoint_token_isolation.py \
 
 ## 方法与入口
 
+历史排序工作的内核也保留在项目中，包括宏块内四列组Wanda降序、预测2:4剪掉部分评分和P&P式交错。当前Hessian/Token主入口不启用排序，旧完整排序CLI已归档；已实现范围、实际升降序及RIA代码边界见[排序代码说明](docs/SORTING.md)。
+
 | 研究内容 | 入口 |
 |---|---|
 | 当前 Token 隔离、平均激活、平均 H、替换误差门槛 | `scripts/run_checkpoint_token_isolation.py` |

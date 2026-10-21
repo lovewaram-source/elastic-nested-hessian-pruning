@@ -19,6 +19,7 @@ DOCUMENTS = (
     "requirements.txt", "docs/CODE_MAP.md", "docs/EXPERIMENTS.md", "docs/RESULTS.md",
     "docs/METHOD.md", "docs/RELEASING.md",
     "docs/GETTING_STARTED.md", "docs/VALIDATION.md",
+    "docs/SORTING.md",
     "docs/figures/method-overview.svg", "docs/figures/ppl-comparison.svg",
 )
 RUNNERS = (

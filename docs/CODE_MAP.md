@@ -18,6 +18,8 @@
 
 ## 修改位置
 
+历史排序内核的函数、实际方向和旧入口归档情况见 [SORTING.md](SORTING.md)。排序主要在 `lib/elastic_sparsegpt.py` 的 `column_permutation()`、`_wanda_group_stage_desc_order()`、`_wanda_group_stage_quartile_interleave_order()` 和 `reorder_next_2of4_stage_groups()`；当前Hessian/Token主入口不启用它们。
+
 | 要改什么 | 主要文件 |
 |---|---|
 | Block 级余弦排名、替换误差、全平均位置 | `checkpoint_token_isolation_core.py` |
